@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="description" content="One hundred line-drawing panel puzzles.">
+<meta name="description" content="Two hundred line-drawing panel puzzles.">
 <title>Hundred Panels</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Jost:wght@400;600&display=swap">
 <style>
@@ -27,7 +27,7 @@
   #lvSec { display: block; font-size: 12px; color: var(--mut); letter-spacing: .04em; text-transform: uppercase; }
   #stage { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 2px 16px; }
   canvas { display: block; touch-action: none; cursor: pointer; }
-  #status { height: 26px; text-align: center; color: var(--mut); font-size: 14px; padding: 0 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #status { min-height: 44px; display: flex; align-items: center; justify-content: center; text-align: center; text-wrap: balance; color: var(--soft); font-size: 15px; line-height: 1.3; padding: 2px 16px; max-width: 720px; width: 100%; margin: 0 auto; }
   #status.ok { color: var(--acc); }
   button {
     font: inherit; color: var(--fg); background: var(--btn); border: 0; border-radius: 9px;
@@ -44,6 +44,10 @@
   .sheet { width: 100%; max-width: 560px; }
   .sheet-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
   .sheet-head h1 { font-size: 20px; margin: 0; font-weight: 600; }
+  #packTabs { display: flex; gap: 8px; margin: 10px 0 12px; }
+  #packTabs:empty { display: none; }
+  .tab { flex: 1; }
+  .tab.on { background: var(--acc); color: var(--acc-ink); font-weight: 600; }
   .sec-name { margin: 18px 0 8px; font-size: 12px; color: var(--mut); letter-spacing: .05em; text-transform: uppercase; }
   .lv-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(46px, 1fr)); gap: 7px; }
   .lv-grid button { min-width: 0; padding: 0; height: 44px; font-variant-numeric: tabular-nums; }
@@ -74,6 +78,7 @@
 <div id="menu" class="overlay" hidden>
   <div class="sheet">
     <div class="sheet-head"><h1>Hundred Panels</h1><button id="menuClose" aria-label="Close">&#10005;</button></div>
+    <div id="packTabs"></div>
     <div class="small" id="progress"></div>
     <div id="menuBody"></div>
     <p class="small" style="margin-top:26px">A small fan-made homage to the panel puzzles of <i>The Witness</i>. Progress is saved in this browser.
@@ -103,6 +108,9 @@
  *   c      cell symbols [[x,y,type,...]]
  *            'q',colour  square        's',colour  star       't',n  triangles
  *            'p',mask,rot  shape       'n',mask,rot  hollow shape      'x'  eliminator
+ *            'z',n  area of n cells    'f',n  rectangle of n cells     'e',n  lookout seeing n cells
+ *   v      marks on vertices [[x,y,type,k]]
+ *            'o' ring: pass straight through   'k' diamond: turn here   'a',k letter: visit in order
  */
 (function (root) {
   'use strict';
@@ -150,7 +158,7 @@
   };
 
   // Colour ids of the symbols that have a fixed colour (used by the star rule).
-  E.SYM_COLOR = { t: 7, p: 5, n: 6, x: 9 };
+  E.SYM_COLOR = { t: 7, p: 5, n: 6, x: 9, z: 8, f: 8, e: 4 };
 
   // ---- per-level lookup tables ------------------------------------------------------
   E.prep = function (P) {
@@ -172,7 +180,7 @@
     C.syms = (P.c || []).map((a, i) => {
       const s = { i, x: a[0], y: a[1], pos: a[1] * gw + a[0], t: a[2], name: 'c' + i };
       s.c = (s.t === 'q' || s.t === 's') ? a[3] : E.SYM_COLOR[s.t];
-      if (s.t === 't') s.n = a[3];
+      if (s.t === 't' || s.t === 'z' || s.t === 'f' || s.t === 'e') s.n = a[3];
       if (s.t === 'p' || s.t === 'n') {
         s.mask = a[3]; s.rot = a[4] ? 1 : 0;
         s.rots = E.rotations(s.mask, s.rot); s.size = s.rots[0].length; s.key = s.mask + ':' + s.rot;
@@ -181,6 +189,14 @@
       return s;
     });
     C.dotItems = (P.d || []).map((d, i) => ({ t: 'd', name: 'd' + i, c: -1 }));
+    C.eyes = C.syms.filter(s => s.t === 'e');
+    C.vAt = new Int16Array(n).fill(-1);
+    C.vsyms = (P.v || []).map((a, i) => {
+      const s = { i, x: a[0], y: a[1], pos: a[1] * gw + a[0], t: a[2], k: a[3] || 0, name: 'v' + i };
+      C.vAt[s.pos] = i;
+      return s;
+    });
+    C.vItems = C.vsyms.map(s => ({ t: 'd', name: s.name, c: -1 }));     // judged like a missed hexagon
     C.stamp = new Int32Array(n); C.stampN = 0;
     Object.defineProperty(P, '_c', { value: C, writable: true, configurable: true });
     return C;
@@ -248,6 +264,28 @@
   function edgeCount(C, occ, p) {
     return (occ[p - 1] ? 1 : 0) + (occ[p + 1] ? 1 : 0) + (occ[p - C.gw] ? 1 : 0) + (occ[p + C.gw] ? 1 : 0);
   }
+
+  // Cells a lookout in cell p sees along its row and column, itself included. The view
+  // stops where the line runs between two cells, or at the rim.
+  E.sight = function (C, occ, p) {
+    const gw = C.gw, gh = C.gh, x = p % gw, y = (p / gw) | 0;
+    let n = 1;
+    for (let q = p, cx = x; cx < gw - 2 && !occ[q + 1]; q += 2, cx += 2) n++;
+    for (let q = p, cx = x; cx > 1 && !occ[q - 1]; q -= 2, cx -= 2) n++;
+    for (let q = p, cy = y; cy < gh - 2 && !occ[q + gw]; q += 2 * gw, cy += 2) n++;
+    for (let q = p, cy = y; cy > 1 && !occ[q - gw]; q -= 2 * gw, cy -= 2) n++;
+    return n;
+  };
+
+  function isRect(C, cells) {
+    let x0 = 1e9, x1 = -1, y0 = 1e9, y1 = -1;
+    for (const p of cells) {
+      const x = p % C.gw, y = (p / C.gw) | 0;
+      if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+    }
+    return ((x1 - x0) / 2 + 1) * ((y1 - y0) / 2 + 1) === cells.length;
+  }
+  E.isRect = isRect;
 
   // Can the shapes tile the area exactly? Hollow shapes each cancel one layer of a solid
   // shape, so solids may overlap or stick out of the area wherever a hollow one cancels them.
@@ -327,6 +365,9 @@
       else if (s.t === 's') { if (cnt[s.c] !== 2) bad.push(s); }
       else if (s.t === 't') { if (edgeCount(C, occ, s.pos) !== s.n) bad.push(s); }
       else if (s.t === 'p' || s.t === 'n') { if (!polyOK) bad.push(s); }
+      else if (s.t === 'z') { if (cells.length !== s.n) bad.push(s); }
+      else if (s.t === 'f') { if (cells.length !== s.n || !isRect(C, cells)) bad.push(s); }
+      else if (s.t === 'e') { if (E.sight(C, occ, s.pos) !== s.n) bad.push(s); }
       else bad.push(s);                                               // eliminator with nothing to do
     }
     return bad;
@@ -341,7 +382,9 @@
       if (C.symAt[p] >= 0) items.push(C.syms[C.symAt[p]]);
       for (let k = 0; k < 8; k++) {
         const q = p + nb[k];
-        if (C.dotAt[q] >= 0 && !occ[q] && stamp[q] !== st) { stamp[q] = st; items.push(C.dotItems[C.dotAt[q]]); }
+        if (occ[q] || stamp[q] === st) continue;
+        if (C.dotAt[q] >= 0) { stamp[q] = st; items.push(C.dotItems[C.dotAt[q]]); }
+        else if (C.vAt[q] >= 0) { stamp[q] = st; items.push(C.vItems[C.vAt[q]]); }
       }
     }
     if (!items.length) return [];
@@ -372,8 +415,28 @@
     return baseBad(C, occ, cells, S).concat(elims).map(s => s.name);
   };
 
-  E.validateOcc = function (C, occ) {
-    const bad = [], d = C.P.d || [];
+  // Marks on the line's own route: rings, diamonds and letters it passes through.
+  // (Ones it never reaches are reported by their area, like missed hexagons.)
+  E.routeBad = function (C, path) {
+    const bad = [], letters = [];
+    for (let k = 0; k < path.length; k++) {
+      const vi = C.vAt[path[k][1] * C.gw + path[k][0]];
+      if (vi < 0) continue;
+      const s = C.vsyms[vi];
+      if (s.t === 'a') { letters.push(s); continue; }
+      if (k === 0 || k === path.length - 1) { bad.push(s.name); continue; }
+      const straight = path[k - 1][0] === path[k + 1][0] || path[k - 1][1] === path[k + 1][1];
+      if ((s.t === 'o') !== straight) bad.push(s.name);
+    }
+    for (let k = 1; k < letters.length; k++) {
+      if (letters[k].k < letters[k - 1].k) { for (const s of letters) bad.push(s.name); break; }
+    }
+    return bad;
+  };
+
+  // path is needed only when the level has marks on vertices.
+  E.validateOcc = function (C, occ, path) {
+    const bad = C.vsyms.length ? E.routeBad(C, path) : [], d = C.P.d || [];
     for (let i = 0; i < d.length; i++) {
       const o = occ[d[i][1] * C.gw + d[i][0]];
       if (o && d[i][2] && d[i][2] !== o) bad.push('d' + i);          // taken by the wrong line
@@ -389,7 +452,7 @@
   // path: vertices of the drawn line, [[x,y],...] from a start to an end.
   E.validate = function (P, path) {
     const C = E.prep(P);
-    return E.validateOcc(C, E.occOf(C, path));
+    return E.validateOcc(C, E.occOf(C, path), path);
   };
 
   root.Engine = E;
@@ -502,13 +565,121 @@ window.LEVELS = [
 ];
 </script>
 <script>
+/* Generated by tools/gen.html — do not edit by hand. */
+window.SECTIONS2 = [{"name":"Rings","hue":200,"tip":"The line must pass straight through every ring."},{"name":"Diamonds","hue":28,"tip":"The line must turn on every diamond."},{"name":"Letters","hue":275,"tip":"Pass through the letters in alphabetical order."},{"name":"Sizes","hue":160,"tip":"The line cuts the panel into areas. A number tells how many cells its area must have."},{"name":"Boxes","hue":345,"tip":"A boxed number: its area must be a rectangle with that many cells."},{"name":"Lookouts","hue":225,"tip":"A lookout counts the cells it sees along its row and column, its own included. The line blocks its view."},{"name":"Everything","hue":310}];
+window.LEVELS2 = [
+{"sec":0,"w":2,"h":2,"s":[[0,4]],"e":[[4,0]],"v":[[2,4,"o"],[4,2,"o"]]},
+{"sec":0,"w":3,"h":2,"s":[[0,4]],"e":[[6,0]],"v":[[0,2,"o"],[4,0,"o"],[2,0,"o"]]},
+{"sec":0,"w":3,"h":3,"s":[[4,0]],"e":[[6,4]],"v":[[2,0,"o"],[4,6,"o"],[0,4,"o"],[0,2,"o"]]},
+{"sec":0,"w":3,"h":3,"s":[[6,0]],"e":[[0,6]],"v":[[2,2,"o"],[6,4,"o"],[2,6,"o"],[4,2,"o"]]},
+{"sec":0,"w":4,"h":3,"s":[[4,6]],"e":[[2,0]],"v":[[4,2,"o"],[6,4,"o"],[6,2,"o"],[2,4,"o"],[0,4,"o"]]},
+{"sec":0,"w":4,"h":4,"s":[[8,8]],"e":[[8,0]],"v":[[8,4,"o"],[4,6,"o"],[0,2,"o"],[8,2,"o"],[2,2,"o"]]},
+{"sec":0,"w":4,"h":4,"s":[[0,8]],"e":[[6,0]],"v":[[4,0,"o"],[2,0,"o"],[0,6,"o"],[6,6,"o"],[4,4,"o"],[8,6,"o"]]},
+{"sec":0,"w":5,"h":4,"s":[[0,2]],"e":[[10,6]],"v":[[8,2,"o"],[10,2,"o"],[2,2,"o"],[0,6,"o"],[2,6,"o"],[4,2,"o"],[6,4,"o"]]},
+{"sec":0,"w":5,"h":5,"s":[[10,10]],"e":[[0,8]],"v":[[8,10,"o"],[4,8,"o"],[2,2,"o"],[8,0,"o"],[4,4,"o"],[8,2,"o"],[6,6,"o"],[2,10,"o"]]},
+{"sec":0,"w":5,"h":5,"s":[[10,8]],"e":[[0,10]],"v":[[8,10,"o"],[8,2,"o"],[2,8,"o"],[6,2,"o"],[0,2,"o"],[2,6,"o"],[8,0,"o"],[4,8,"o"],[4,4,"o"]]},
+{"sec":1,"w":2,"h":2,"s":[[0,4]],"e":[[4,0]],"v":[[0,2,"k"],[2,0,"k"]]},
+{"sec":1,"w":3,"h":2,"s":[[0,4]],"e":[[6,0]],"v":[[6,2,"k"],[4,4,"k"],[2,0,"k"]]},
+{"sec":1,"w":3,"h":3,"s":[[6,0]],"e":[[0,4]],"v":[[2,0,"k"],[2,2,"k"],[0,2,"k"],[4,6,"k"]]},
+{"sec":1,"w":4,"h":3,"s":[[0,0]],"e":[[8,0]],"v":[[4,0,"k"],[6,0,"k"],[2,2,"k"],[4,2,"k"],[0,2,"k"]]},
+{"sec":1,"w":4,"h":4,"s":[[4,8]],"e":[[0,0]],"v":[[0,4,"k"],[2,4,"k"],[4,0,"k"],[0,6,"k"],[2,8,"k"]]},
+{"sec":1,"w":3,"h":3,"s":[[6,6]],"e":[[0,0]],"v":[[4,2,"o"],[2,6,"o"],[4,4,"k"],[2,0,"k"],[0,2,"k"]]},
+{"sec":1,"w":4,"h":4,"s":[[8,0]],"e":[[0,4]],"v":[[8,2,"o"],[2,4,"o"],[6,6,"o"],[8,4,"k"],[4,4,"k"],[4,8,"k"]]},
+{"sec":1,"w":4,"h":4,"s":[[8,8]],"e":[[2,0]],"v":[[2,4,"o"],[6,8,"o"],[2,2,"o"],[4,4,"k"],[4,8,"k"],[4,0,"k"]]},
+{"sec":1,"w":5,"h":4,"s":[[0,0]],"e":[[10,6]],"v":[[8,8,"o"],[4,4,"o"],[4,6,"o"],[6,8,"o"],[6,2,"k"],[6,0,"k"],[0,4,"k"],[4,8,"k"]]},
+{"sec":1,"w":5,"h":5,"s":[[10,0]],"e":[[6,10]],"v":[[10,2,"o"],[4,6,"o"],[4,4,"o"],[8,4,"o"],[4,10,"k"],[6,0,"k"],[2,0,"k"],[10,4,"k"]]},
+{"sec":2,"w":2,"h":2,"s":[[0,4]],"e":[[4,0]],"v":[[0,0,"a",0],[4,4,"a",1]]},
+{"sec":2,"w":3,"h":2,"s":[[0,4]],"e":[[6,0]],"v":[[4,2,"a",0],[2,4,"a",1],[6,2,"a",2]]},
+{"sec":2,"w":3,"h":3,"s":[[0,6]],"e":[[6,6]],"v":[[4,2,"a",0],[0,4,"a",1],[6,0,"a",2],[6,2,"a",3]]},
+{"sec":2,"w":3,"h":3,"s":[[0,4]],"e":[[4,0]],"v":[[0,0,"a",0],[2,0,"a",1],[4,4,"a",2],[2,6,"a",3]]},
+{"sec":2,"w":4,"h":3,"s":[[2,0]],"e":[[6,6]],"v":[[0,2,"a",0],[2,2,"a",1],[2,4,"a",2],[4,4,"a",3],[4,6,"a",4]]},
+{"sec":2,"w":4,"h":4,"s":[[0,0]],"e":[[0,8]],"v":[[0,6,"a",0],[6,8,"a",1],[6,4,"a",2],[4,2,"a",3],[4,4,"a",4]]},
+{"sec":2,"w":4,"h":4,"s":[[8,8]],"e":[[0,2]],"v":[[4,2,"o"],[4,4,"o"],[6,8,"o"],[0,4,"a",0],[4,6,"a",1],[2,2,"a",2]]},
+{"sec":2,"w":4,"h":4,"s":[[8,8]],"e":[[4,0]],"v":[[4,8,"k"],[8,2,"k"],[6,4,"k"],[6,8,"a",0],[8,4,"a",1],[8,0,"a",2]]},
+{"sec":2,"w":4,"h":4,"s":[[2,0]],"e":[[2,8]],"v":[[4,4,"o"],[0,4,"o"],[2,6,"k"],[4,8,"k"],[0,6,"a",0],[2,4,"a",1],[2,2,"a",2]]},
+{"sec":2,"w":5,"h":4,"s":[[0,6]],"e":[[10,6]],"v":[[4,4,"o"],[6,8,"o"],[6,4,"k"],[4,6,"k"],[6,6,"k"],[2,8,"a",0],[2,6,"a",1],[10,8,"a",2]]},
+{"sec":2,"w":5,"h":5,"s":[[10,0]],"e":[[0,8]],"v":[[8,2,"o"],[4,6,"o"],[4,2,"o"],[2,0,"k"],[4,10,"k"],[10,2,"k"],[2,4,"a",0],[2,8,"a",1],[0,6,"a",2]]},
+{"sec":2,"w":5,"h":5,"s":[[0,8]],"e":[[10,10]],"v":[[4,6,"o"],[6,6,"o"],[10,8,"k"],[10,6,"k"],[6,10,"k"],[4,10,"a",0],[2,8,"a",1],[6,8,"a",2]]},
+{"sec":3,"w":2,"h":2,"s":[[0,4]],"e":[[4,0]],"c":[[1,1,"z",3],[3,3,"z",1]]},
+{"sec":3,"w":3,"h":2,"s":[[0,4]],"e":[[6,0]],"c":[[3,3,"z",5],[5,3,"z",1]]},
+{"sec":3,"w":3,"h":3,"s":[[6,4]],"e":[[4,0]],"c":[[5,1,"z",6],[5,5,"z",2],[1,3,"z",1]]},
+{"sec":3,"w":3,"h":3,"s":[[4,6]],"e":[[6,0]],"c":[[5,3,"z",4],[5,5,"z",3],[1,1,"z",1]]},
+{"sec":3,"w":4,"h":3,"s":[[2,0]],"e":[[0,6]],"c":[[7,3,"z",6],[1,1,"z",3],[7,1,"z",1]]},
+{"sec":3,"w":4,"h":3,"s":[[8,6]],"e":[[0,6]],"c":[[3,3,"z",6],[1,1,"z",3],[1,5,"z",1]]},
+{"sec":3,"w":4,"h":4,"s":[[8,0]],"e":[[0,6]],"c":[[1,3,"z",7],[5,1,"z",4],[7,5,"z",1]]},
+{"sec":3,"w":4,"h":4,"s":[[8,8]],"e":[[0,8]],"c":[[3,5,"z",7],[5,5,"z",3],[1,7,"z",3]]},
+{"sec":3,"w":4,"h":4,"s":[[0,8]],"e":[[6,0]],"c":[[7,7,"z",3],[7,1,"z",2],[1,1,"z",1]]},
+{"sec":3,"w":5,"h":4,"s":[[0,0]],"e":[[10,2]],"c":[[1,1,"z",8],[7,3,"z",4],[9,1,"z",1],[7,7,"z",2]]},
+{"sec":3,"w":5,"h":4,"s":[[2,8]],"e":[[10,4]],"c":[[7,3,"z",5],[3,7,"z",5],[9,1,"z",3],[1,1,"z",1]]},
+{"sec":3,"w":5,"h":5,"s":[[0,0]],"e":[[10,2]],"c":[[5,5,"z",9],[9,7,"z",5],[3,1,"z",3],[9,3,"z",2],[1,9,"z",1]]},
+{"sec":3,"w":5,"h":5,"s":[[2,10]],"e":[[10,0]],"c":[[5,9,"z",9],[5,5,"z",6],[1,5,"z",5],[9,5,"z",1]]},
+{"sec":3,"w":5,"h":5,"s":[[0,10]],"e":[[10,4]],"c":[[1,7,"z",8],[3,3,"z",7],[7,3,"z",4],[1,9,"z",1]]},
+{"sec":4,"w":3,"h":3,"s":[[0,6]],"e":[[6,6]],"c":[[3,1,"f",3],[5,5,"f",6]]},
+{"sec":4,"w":4,"h":3,"s":[[0,2]],"e":[[8,4]],"c":[[7,1,"f",3],[3,5,"f",4]]},
+{"sec":4,"w":4,"h":3,"s":[[0,6]],"e":[[8,2]],"c":[[7,1,"f",3],[1,1,"f",4],[5,3,"z",5]]},
+{"sec":4,"w":4,"h":4,"s":[[0,8]],"e":[[6,0]],"c":[[7,7,"f",3],[7,3,"f",4],[1,5,"z",9]]},
+{"sec":4,"w":4,"h":4,"s":[[0,0]],"e":[[6,8]],"c":[[5,5,"f",4],[1,1,"f",3],[3,5,"z",8],[1,7,"z",1]]},
+{"sec":4,"w":4,"h":4,"s":[[4,8]],"e":[[8,2]],"c":[[5,1,"f",4],[7,1,"f",4],[1,1,"f",8]]},
+{"sec":4,"w":4,"h":4,"s":[[0,2]],"e":[[4,8]],"c":[[3,3,"f",4],[7,1,"f",4],[1,7,"z",5]]},
+{"sec":4,"w":5,"h":4,"s":[[0,6]],"e":[[10,0]],"c":[[1,1,"f",4],[7,7,"f",4],[5,7,"z",9]]},
+{"sec":4,"w":5,"h":5,"s":[[10,2]],"e":[[0,10]],"c":[[7,9,"f",5],[9,7,"f",5],[1,5,"z",9],[1,7,"z",1]]},
+{"sec":4,"w":5,"h":5,"s":[[0,2]],"e":[[8,10]],"c":[[9,3,"f",5],[9,9,"f",4],[1,7,"z",6]]},
+{"sec":5,"w":2,"h":2,"s":[[0,4]],"e":[[4,0]],"c":[[1,1,"e",1],[1,3,"e",2]]},
+{"sec":5,"w":3,"h":2,"s":[[0,4]],"e":[[6,0]],"c":[[1,3,"e",3],[5,1,"e",1]]},
+{"sec":5,"w":3,"h":3,"s":[[6,0]],"e":[[0,2]],"c":[[3,1,"e",5],[1,3,"e",4],[5,5,"e",3]]},
+{"sec":5,"w":3,"h":3,"s":[[0,6]],"e":[[6,2]],"c":[[1,1,"e",5],[5,1,"e",5],[3,3,"e",2]]},
+{"sec":5,"w":4,"h":3,"s":[[0,4]],"e":[[6,0]],"c":[[3,1,"e",5],[1,3,"e",3],[5,5,"e",5],[7,5,"e",4]]},
+{"sec":5,"w":4,"h":4,"s":[[0,0]],"e":[[8,2]],"c":[[1,5,"e",4],[1,1,"e",5],[3,7,"e",6],[5,5,"e",4]]},
+{"sec":5,"w":4,"h":4,"s":[[8,8]],"e":[[0,0]],"c":[[1,1,"e",4],[3,1,"e",4],[5,5,"e",7],[5,7,"e",7],[7,7,"e",7]]},
+{"sec":5,"w":5,"h":4,"s":[[0,0]],"e":[[10,0]],"c":[[5,7,"e",5],[3,3,"e",7],[7,5,"e",4],[1,3,"e",7],[7,1,"e",2]]},
+{"sec":5,"w":5,"h":5,"s":[[0,2]],"e":[[10,10]],"c":[[3,5,"e",5],[3,9,"e",3],[3,1,"e",2],[9,5,"e",7],[9,3,"e",6],[1,7,"e",2],[9,1,"e",6]]},
+{"sec":5,"w":4,"h":4,"s":[[8,8]],"e":[[0,8]],"c":[[3,3,"z",12],[7,1,"z",1],[7,5,"e",4],[3,7,"e",4],[3,1,"e",4]]},
+{"sec":5,"w":4,"h":4,"s":[[6,0]],"e":[[8,8]],"c":[[1,3,"f",4],[7,1,"z",9],[7,7,"z",3],[5,3,"e",4],[3,7,"e",3],[5,5,"e",5]]},
+{"sec":5,"w":5,"h":4,"s":[[0,2]],"e":[[10,6]],"c":[[3,5,"z",14],[9,3,"z",3],[1,3,"e",4],[9,1,"e",3],[9,7,"e",3]]},
+{"sec":5,"w":5,"h":5,"s":[[0,0]],"e":[[10,4]],"c":[[5,1,"z",15],[3,1,"z",6],[3,5,"e",5],[3,7,"e",5],[1,9,"e",3],[3,9,"e",2]]},
+{"sec":5,"w":5,"h":5,"s":[[0,0]],"e":[[10,0]],"c":[[5,9,"f",5],[5,3,"z",16],[1,3,"e",3],[9,3,"e",5],[5,5,"e",6]]},
+{"sec":6,"w":4,"h":4,"s":[[0,8]],"e":[[8,2]],"c":[[7,7,"z",7],[1,7,"z",6]],"v":[[2,2,"o"],[2,0,"o"]]},
+{"sec":6,"w":4,"h":4,"s":[[8,8]],"e":[[0,4]],"c":[[5,3,"z",4],[1,3,"z",1]],"v":[[4,4,"k"],[6,4,"k"],[6,2,"k"]]},
+{"sec":6,"w":4,"h":4,"s":[[0,0]],"e":[[0,8]],"c":[[5,3,"z",12],[1,5,"z",3]],"v":[[2,4,"a",0],[2,6,"a",1],[4,8,"a",2]]},
+{"sec":6,"w":4,"h":4,"s":[[2,8]],"e":[[8,0]],"c":[[3,3,"z",10],[3,7,"z",4]],"v":[[6,2,"o"],[6,8,"o"],[8,4,"k"],[8,2,"k"]]},
+{"sec":6,"w":4,"h":4,"s":[[8,0]],"e":[[8,8]],"c":[[5,5,"e",2],[1,1,"e",7]],"v":[[4,4,"o"],[8,6,"o"]]},
+{"sec":6,"w":4,"h":4,"s":[[8,8]],"e":[[0,6]],"c":[[3,5,"e",7],[3,3,"e",6],[3,1,"e",5]],"v":[[4,2,"k"],[8,4,"k"],[6,8,"k"]]},
+{"sec":6,"w":4,"h":4,"s":[[0,2]],"e":[[6,0]],"c":[[1,5,"e",7],[1,1,"e",5]],"v":[[2,4,"a",0],[6,2,"a",1],[8,2,"a",2]]},
+{"sec":6,"w":4,"h":4,"s":[[0,0]],"e":[[8,8]],"c":[[5,7,"e",4],[5,3,"e",4]],"v":[[6,0,"o"],[4,2,"o"],[6,6,"a",0],[4,4,"a",1]]},
+{"sec":6,"w":5,"h":4,"s":[[0,0]],"e":[[10,6]],"c":[[7,1,"z",9],[1,7,"z",8],[1,1,"z",3]],"v":[[6,2,"o"],[2,0,"o"],[4,2,"k"],[2,8,"k"]]},
+{"sec":6,"w":5,"h":4,"s":[[0,0]],"e":[[10,8]],"c":[[3,7,"f",8],[7,1,"z",5]],"v":[[10,2,"a",0],[6,8,"a",1]]},
+{"sec":6,"w":5,"h":4,"s":[[0,4]],"e":[[6,8]],"c":[[7,1,"z",13],[5,5,"e",6],[7,3,"e",6]],"v":[[8,4,"o"],[6,6,"o"],[0,6,"o"]]},
+{"sec":6,"w":5,"h":4,"s":[[10,8]],"e":[[0,6]],"c":[[9,5,"e",2],[1,5,"e",6],[7,1,"e",5],[9,3,"e",3]],"v":[[10,2,"k"],[4,6,"k"],[2,4,"k"]]},
+{"sec":6,"w":5,"h":4,"s":[[0,0]],"e":[[10,2]],"c":[[1,1,"e",5],[9,5,"e",8]],"v":[[8,2,"k"],[4,4,"k"],[6,4,"a",0],[6,0,"a",1]]},
+{"sec":6,"w":5,"h":4,"s":[[10,0]],"e":[[0,6]],"c":[[1,3,"z",4]],"v":[[4,0,"o"],[2,0,"o"],[8,4,"k"],[8,2,"k"],[6,0,"a",0],[6,2,"a",1]]},
+{"sec":6,"w":5,"h":5,"s":[[4,0]],"e":[[8,10]],"c":[[1,9,"z",11],[7,5,"z",4]],"v":[[4,2,"o"],[4,4,"o"],[8,8,"o"]]},
+{"sec":6,"w":5,"h":5,"s":[[10,10]],"e":[[0,2]],"c":[[9,9,"f",4],[7,3,"z",16],[5,1,"z",2]],"v":[[4,2,"k"],[10,6,"k"],[0,6,"k"]]},
+{"sec":6,"w":5,"h":5,"s":[[10,10]],"e":[[0,0]],"c":[[3,7,"z",19],[9,1,"z",3],[9,9,"z",1]],"v":[[4,2,"a",0],[2,2,"a",1],[2,4,"a",2]]},
+{"sec":6,"w":5,"h":5,"s":[[10,6]],"e":[[4,0]],"c":[[7,1,"e",9],[9,7,"e",7],[7,5,"e",7]],"v":[[2,6,"o"],[0,2,"o"],[0,8,"k"],[4,2,"k"],[4,10,"k"]]},
+{"sec":6,"w":5,"h":5,"s":[[10,0]],"e":[[0,6]],"c":[[3,7,"e",6],[5,1,"e",4],[9,3,"e",2],[1,7,"e",7]],"v":[[6,4,"a",0],[6,8,"a",1],[8,4,"a",2]]},
+{"sec":6,"w":5,"h":5,"s":[[10,10]],"e":[[6,0]],"c":[[1,5,"z",17],[9,9,"z",5],[1,3,"e",6],[7,5,"e",5]],"v":[[8,0,"o"],[8,2,"o"],[4,6,"k"],[8,8,"k"]]},
+{"sec":6,"w":5,"h":5,"s":[[10,0]],"e":[[0,10]],"c":[[7,5,"z",10],[3,5,"z",9],[5,9,"z",3]],"v":[[2,6,"o"],[6,6,"o"],[4,10,"a",0],[0,2,"a",1]]},
+{"sec":6,"w":5,"h":5,"s":[[0,10]],"e":[[8,0]],"c":[[1,7,"e",8],[1,3,"e",7],[1,5,"e",8]],"v":[[4,0,"k"],[4,8,"k"],[6,8,"k"],[10,8,"a",0],[8,8,"a",1]]},
+{"sec":6,"w":5,"h":5,"s":[[6,10]],"e":[[10,0]],"c":[[7,5,"z",5],[7,1,"z",4]],"v":[[6,6,"o"],[6,2,"o"],[8,6,"k"],[4,6,"k"],[10,2,"a",0],[2,2,"a",1]]},
+{"sec":6,"w":5,"h":5,"s":[[6,0]],"e":[[6,10]],"c":[[1,1,"e",5],[1,3,"e",7],[9,7,"e",6]],"v":[[8,8,"o"],[4,8,"o"],[10,2,"k"],[0,6,"k"],[10,8,"a",0],[6,8,"a",1]]},
+{"sec":6,"w":5,"h":5,"s":[[0,0]],"e":[[6,10]],"c":[[3,7,"f",6],[9,9,"z",16],[7,5,"e",7],[1,7,"e",4]],"v":[[4,0,"a",0],[0,4,"a",1],[2,4,"a",2]]},
+{"sec":6,"w":5,"h":5,"s":[[10,10]],"e":[[2,0]],"c":[[7,9,"f",5],[3,1,"z",11],[5,3,"e",5],[7,3,"e",5]],"v":[[6,4,"o"],[2,6,"o"],[0,6,"k"],[10,4,"k"]]},
+{"sec":6,"w":6,"h":4,"s":[[0,0]],"e":[[10,8]],"c":[[11,3,"z",9],[9,7,"z",7],[1,5,"z",3]],"v":[[8,6,"o"],[6,2,"o"],[2,6,"k"],[6,0,"k"]]},
+{"sec":6,"w":6,"h":4,"s":[[0,0]],"e":[[12,6]],"c":[[11,5,"z",8],[5,1,"z",8],[1,7,"z",7],[11,3,"e",5],[5,7,"e",5]],"v":[[2,8,"a",0],[6,4,"a",1],[12,2,"a",2]]},
+{"sec":6,"w":5,"h":5,"s":[[0,10]],"e":[[10,0]],"c":[[1,3,"f",4],[3,5,"z",11],[9,1,"e",5],[5,3,"e",5]],"v":[[6,6,"o"],[10,8,"k"],[6,10,"k"],[0,6,"a",0],[8,10,"a",1]]},
+{"sec":6,"w":5,"h":5,"s":[[0,10]],"e":[[10,4]],"c":[[7,7,"f",4],[5,1,"z",10],[7,1,"e",5]],"v":[[2,6,"o"],[0,4,"k"],[4,4,"a",0],[8,4,"a",1]]}
+];
+</script>
+<script>
 /* Canvas drawing of a panel. Used by the game and by the level gallery. */
 (function (root) {
   'use strict';
   const E = root.Engine, R = {};
 
-  // colour ids: 0 white, 1 black, 2 magenta, 3 green, 4 cyan, 5 shape yellow, 6 hollow blue, 7 triangle orange, 9 eliminator
-  R.COL = ['#f3f3ee', '#15171b', '#e84aa0', '#56c94d', '#35b8f5', '#f7c92e', '#5b93ff', '#ff9c2b', '#999', '#f3f3ee'];
+  // colour ids: 0 white, 1 black, 2 magenta, 3 green, 4 cyan, 5 shape yellow, 6 hollow blue, 7 triangle orange, 8 numbers, 9 eliminator
+  R.COL = ['#f3f3ee', '#15171b', '#e84aa0', '#56c94d', '#7fdcff', '#f7c92e', '#5b93ff', '#ff9c2b', '#fbf3d0', '#f3f3ee'];
+  R.INK = '#15171b';
+  R.FONT = "Jost, system-ui, -apple-system, 'Segoe UI', sans-serif";
   R.RED = '#ff3b30';
   R.LINE = '#ffffff';
   R.LINE1 = '#3fd0ff';
@@ -550,6 +721,30 @@ window.LEVELS = [
     ctx.fill();
   }
 
+  function text(ctx, str, x, y, px, color) {
+    ctx.font = '600 ' + px + 'px ' + R.FONT;
+    ctx.fillStyle = color; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+    const m = ctx.measureText(str), up = m.actualBoundingBoxAscent || px * 0.7, dn = m.actualBoundingBoxDescent || 0;
+    ctx.fillText(str, x, y + (up - dn) / 2);
+  }
+
+  // marks that sit on the line: ring, diamond, letter
+  function drawVSym(ctx, s, x, y, lw, color) {
+    ctx.fillStyle = ctx.strokeStyle = color;
+    if (s.t === 'o') {
+      ctx.lineWidth = lw * 0.28;
+      ctx.beginPath(); ctx.arc(x, y, lw * 0.64, 0, 6.2832); ctx.stroke();
+    } else if (s.t === 'k') {
+      const r = lw * 0.84;
+      ctx.beginPath(); ctx.moveTo(x, y - r); ctx.lineTo(x + r, y); ctx.lineTo(x, y + r); ctx.lineTo(x - r, y);
+      ctx.closePath(); ctx.fill();
+    } else {
+      disc(ctx, x, y, lw * 0.88);
+      text(ctx, String.fromCharCode(65 + s.k), x, y, lw * 1.15, '#f3f3ee');
+    }
+  }
+  R.drawVSym = drawVSym;
+
   function drawSym(ctx, s, cx, cy, u, color) {
     ctx.fillStyle = ctx.strokeStyle = color;
     if (s.t === 'q') {
@@ -589,6 +784,25 @@ window.LEVELS = [
       }
       ctx.stroke();
       disc(ctx, cx, cy, 0.0375 * u);
+    } else if (s.t === 'z' || s.t === 'f') {
+      text(ctx, String(s.n), cx, cy, (s.n > 9 ? 0.34 : 0.42) * u, color);
+      if (s.t === 'f') {
+        ctx.lineWidth = 0.04 * u;
+        rr(ctx, cx - 0.29 * u, cy - 0.29 * u, 0.58 * u, 0.58 * u, 0.06 * u); ctx.stroke();
+      }
+    } else if (s.t === 'e') {
+      // lookout: a number that looks along its row and column
+      const r = 0.19 * u, d = 0.27 * u, a = 0.075 * u;
+      ctx.lineWidth = 0.035 * u;
+      ctx.beginPath(); ctx.arc(cx, cy, r, 0, 6.2832); ctx.stroke();
+      for (const v of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        ctx.beginPath();
+        ctx.moveTo(cx + v[0] * (d + a), cy + v[1] * (d + a));
+        ctx.lineTo(cx + v[0] * d + v[1] * a * 0.8, cy + v[1] * d + v[0] * a * 0.8);
+        ctx.lineTo(cx + v[0] * d - v[1] * a * 0.8, cy + v[1] * d - v[0] * a * 0.8);
+        ctx.closePath(); ctx.fill();
+      }
+      text(ctx, String(s.n), cx, cy, 0.25 * u, color === R.RED ? color : '#f3f3ee');
     }
   }
   R.drawSym = drawSym;
@@ -666,6 +880,12 @@ window.LEVELS = [
       line(st.path, dead ? R.DEAD : C.sym ? R.LINE1 : R.LINE);
     }
 
+    // marks on the line stay readable on top of it
+    for (const s of C.vsyms) {
+      drawVSym(ctx, s, X(s.x), Y(s.y), lw, hot(s.name) && st.blink ? R.RED : R.INK);
+      if (hot(s.name)) ring(X(s.x), Y(s.y), lw * 1.3);
+    }
+
     // wrong hexagons stay visible on top of the line
     if (st.bad && st.bad.size) (P.d || []).forEach((d, i) => {
       if (!hot('d' + i)) return;
@@ -683,28 +903,37 @@ window.LEVELS = [
 /* Game UI: tracing the line, checking it, level navigation. */
 (function () {
   'use strict';
-  const E = window.Engine, Rn = window.Render, LEVELS = window.LEVELS, SECTIONS = window.SECTIONS;
+  const E = window.Engine, Rn = window.Render;
   const $ = id => document.getElementById(id);
   const cv = $('cv'), ctx = cv.getContext('2d');
   const SAVE_KEY = 'hundred-panels';
+
+  // Two packs of 100. Classic levels keep their plain index as save key (older saves).
+  const PACKS = [
+    { id: 'n', name: 'New mechanics', sections: window.SECTIONS2, levels: window.LEVELS2 },
+    { id: 'c', name: 'Classic', sections: window.SECTIONS, levels: window.LEVELS }
+  ].filter(p => p.levels && p.levels.length);
+  const keyOf = (pk, i) => (PACKS[pk].id === 'c' ? '' : PACKS[pk].id) + i;
 
   let save = {};
   try { save = JSON.parse(localStorage.getItem(SAVE_KEY) || '{}') || {}; } catch (e) { save = {}; }
   if (!save.solved) save.solved = {};
   const persist = () => { try { localStorage.setItem(SAVE_KEY, JSON.stringify(save)); } catch (e) { /* private mode */ } };
 
-  let cur = 0, P, C, geo, path = [], occ = null;
+  let pk = 0, cur = 0, pack, P, C, geo, path = [], occ = null;
   let mode = 'idle';                // idle | trace | done | fail
   let bad = new Set(), blink = false, blinkTimer = null;
-  let down = false, moved = false, hover = false, downPt = [0, 0], kbStart = 0;
+  let down = false, moved = false, hover = false, downPt = [0, 0], kbStart = 0, menuPack = 0;
 
   const X = x => geo.ox + x * geo.cell / 2, Y = y => geo.oy + y * geo.cell / 2;
   const head = () => path[path.length - 1];
   const isAtEnd = () => path.length > 1 && E.atEnd(C, head()[0], head()[1]);
-  const solvedCount = () => LEVELS.reduce((n, _, i) => n + (save.solved[i] ? 1 : 0), 0);
+  const isSolved = (k, i) => !!save.solved[keyOf(k, i)];
+  const solvedCount = k => PACKS[k].levels.reduce((n, _, i) => n + (isSolved(k, i) ? 1 : 0), 0);
+  const section = () => pack.sections[P.sec];
 
   function draw() {
-    Rn.draw(ctx, P, geo, { path, mode, bad, blink, theme: Rn.theme(SECTIONS[P.sec].hue) });
+    Rn.draw(ctx, P, geo, { path, mode, bad, blink, theme: Rn.theme(section().hue) });
   }
   function resize() {
     const box = $('stage').getBoundingClientRect();
@@ -729,24 +958,29 @@ window.LEVELS = [
   }
 
   function refreshUI() {
-    $('lvNum').textContent = (cur + 1) + ' / ' + LEVELS.length;
-    $('lvSec').textContent = SECTIONS[P.sec].name;
+    $('lvNum').textContent = (cur + 1) + ' / ' + pack.levels.length;
+    $('lvSec').textContent = (PACKS.length > 1 ? pack.name + ' · ' : '') + section().name;
     $('prevBtn').disabled = cur === 0;
-    $('nextBtn').disabled = cur === LEVELS.length - 1;
-    $('nextBtn').classList.toggle('glow', mode === 'done' && cur < LEVELS.length - 1);
+    $('nextBtn').disabled = cur === pack.levels.length - 1;
+    $('nextBtn').classList.toggle('glow', mode === 'done' && cur < pack.levels.length - 1);
   }
+  // What to say under an untouched panel: the rule a new symbol brings, or a nudge.
   function idleHint() {
-    if (save.solved[cur]) return setStatus('Solved', true);
+    if (isSolved(pk, cur)) return setStatus('Solved', true);
+    const firstOfSection = cur === 0 || pack.levels[cur - 1].sec !== P.sec;
+    if (firstOfSection && section().tip) return setStatus((cur === 0 ? 'Draw from the circle to the rounded tip. ' : '') + section().tip);
     if (cur === 0) return setStatus('Press the circle, draw to the rounded tip, press again');
     if (P.s.length > 1 && !C.sym) return setStatus('More than one place to begin');
     setStatus('');
   }
-  function load(i) {
-    cur = Math.max(0, Math.min(LEVELS.length - 1, i));
-    P = LEVELS[cur]; C = E.prep(P);
+  function load(k, i) {
+    pk = Math.max(0, Math.min(PACKS.length - 1, k));
+    pack = PACKS[pk];
+    cur = Math.max(0, Math.min(pack.levels.length - 1, i));
+    P = pack.levels[cur]; C = E.prep(P);
     path = []; occ = null; mode = 'idle'; bad = new Set(); down = hover = false; kbStart = 0;
     stopBlink();
-    save.cur = cur; persist();
+    save.at = [pack.id, cur]; persist();
     refreshUI(); idleHint(); resize();
   }
   function reset() {
@@ -792,9 +1026,9 @@ window.LEVELS = [
     down = hover = false;
     if (res.ok) {
       mode = 'done';
-      save.solved[cur] = 1; persist();
-      const all = solvedCount() === LEVELS.length;
-      setStatus(all ? 'All ' + LEVELS.length + ' panels solved!' : 'Solved', true);
+      save.solved[keyOf(pk, cur)] = 1; persist();
+      const all = solvedCount(pk) === pack.levels.length;
+      setStatus(all ? 'All ' + pack.levels.length + ' panels of this pack solved!' : 'Solved', true);
     } else {
       mode = 'fail';
       bad = new Set(res.bad);
@@ -860,7 +1094,7 @@ window.LEVELS = [
       draw();
     } else if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
-      if (mode === 'done') { if (cur < LEVELS.length - 1) load(cur + 1); }
+      if (mode === 'done') { if (cur < pack.levels.length - 1) load(pk, cur + 1); }
       else if (mode === 'trace' && isAtEnd()) submit();
     } else if (e.key === 'Backspace') {
       if (mode === 'fail') resume();
@@ -870,41 +1104,49 @@ window.LEVELS = [
       kbStart = (kbStart + 1) % P.s.length;
       begin(P.s[kbStart]); draw();
     } else if (e.key === 'Escape' || e.key === 'r' || e.key === 'R') reset();
-    else if (e.key === 'n' || e.key === 'N') { if (cur < LEVELS.length - 1) load(cur + 1); }
-    else if (e.key === 'p' || e.key === 'P') { if (cur > 0) load(cur - 1); }
+    else if (e.key === 'n' || e.key === 'N') { if (cur < pack.levels.length - 1) load(pk, cur + 1); }
+    else if (e.key === 'p' || e.key === 'P') { if (cur > 0) load(pk, cur - 1); }
   });
 
   // ---- level list ---------------------------------------------------------------
-  function openMenu() {
-    const body = $('menuBody');
+  function fillMenu() {
+    const tabs = $('packTabs'), body = $('menuBody'), mp = PACKS[menuPack];
+    tabs.textContent = '';
+    if (PACKS.length > 1) PACKS.forEach((p, k) => {
+      const b = document.createElement('button');
+      b.textContent = p.name;
+      b.className = k === menuPack ? 'tab on' : 'tab';
+      b.addEventListener('click', () => { menuPack = k; fillMenu(); });
+      tabs.appendChild(b);
+    });
+    $('progress').textContent = solvedCount(menuPack) + ' of ' + mp.levels.length + ' solved';
     body.textContent = '';
-    $('progress').textContent = solvedCount() + ' of ' + LEVELS.length + ' solved';
-    SECTIONS.forEach((sec, si) => {
+    mp.sections.forEach((sec, si) => {
       const name = document.createElement('div');
       name.className = 'sec-name'; name.textContent = sec.name;
       const grid = document.createElement('div');
       grid.className = 'lv-grid';
-      LEVELS.forEach((lv, i) => {
+      mp.levels.forEach((lv, i) => {
         if (lv.sec !== si) return;
         const b = document.createElement('button');
         b.textContent = i + 1;
-        if (save.solved[i]) b.className = 'solved';
-        if (i === cur) b.classList.add('here');
-        b.addEventListener('click', () => { $('menu').hidden = true; load(i); });
+        if (isSolved(menuPack, i)) b.className = 'solved';
+        if (menuPack === pk && i === cur) b.classList.add('here');
+        b.addEventListener('click', () => { $('menu').hidden = true; load(menuPack, i); });
         grid.appendChild(b);
       });
       body.appendChild(name); body.appendChild(grid);
     });
-    $('menu').hidden = false;
   }
+  function openMenu() { menuPack = pk; fillMenu(); $('menu').hidden = false; }
 
   // ---- rules --------------------------------------------------------------------
   function icon(sym) {
     const c = document.createElement('canvas'), s = 54, dpr = window.devicePixelRatio || 1;
     c.width = c.height = s * dpr; c.style.width = c.style.height = s + 'px';
-    const x = c.getContext('2d');
+    const x = c.getContext('2d'), th = Rn.theme(section().hue);
     x.scale(dpr, dpr);
-    x.fillStyle = Rn.theme(SECTIONS[P.sec].hue).bg; x.fillRect(0, 0, s, s);
+    x.fillStyle = th.bg; x.fillRect(0, 0, s, s);
     if (sym.t === 'd') {
       x.fillStyle = '#0e0f12'; x.beginPath();
       for (let k = 0; k < 6; k++) x.lineTo(s / 2 + 11 * Math.cos(k * Math.PI / 3), s / 2 + 11 * Math.sin(k * Math.PI / 3));
@@ -917,6 +1159,9 @@ window.LEVELS = [
       x.lineWidth = 8; x.lineCap = 'round'; x.strokeStyle = x.fillStyle = Rn.LINE;
       x.beginPath(); x.arc(15, 38, 8, 0, 6.3); x.fill();
       x.beginPath(); x.moveTo(15, 38); x.lineTo(38, 38); x.lineTo(38, 12); x.stroke();
+    } else if (sym.v) {                                 // a mark sitting on a piece of grid line
+      x.strokeStyle = th.grid; x.lineWidth = 14; x.beginPath(); x.moveTo(0, s / 2); x.lineTo(s, s / 2); x.stroke();
+      Rn.drawVSym(x, sym, s / 2, s / 2, 14, Rn.INK);
     } else {
       if (sym.mask) sym.rots = E.rotations(sym.mask, sym.rot);
       Rn.drawSym(x, sym, s / 2, s / 2, 90, Rn.COL[sym.c]);
@@ -924,16 +1169,22 @@ window.LEVELS = [
     return c;
   }
   function openHelp() {
-    const has = t => (P.c || []).some(a => a[2] === t);
-    const rules = [[{ t: 'l' }, 'Draw one line from a big circle to a rounded tip. It can never cross or touch itself, and it cannot pass a broken segment.']];
+    const has = t => (P.c || []).some(a => a[2] === t), hasV = t => (P.v || []).some(a => a[2] === t);
+    const rules = [[{ t: 'l' }, 'Draw one line from the big circle to the rounded tip. It can never cross or touch itself' + ((P.g || []).length ? ', and it cannot pass a broken segment.' : '.')]];
     if (C.sym) rules.push([{ t: 'm' }, 'A second line copies yours as a ' + (C.sym === 'r' ? 'half-turn rotation' : 'mirror image') + '. The two lines may not meet. Start from either circle.']);
     if ((P.d || []).length) rules.push([{ t: 'd' }, 'The line must pass through every hexagon.' + ((P.d || []).some(d => d[2]) ? ' A coloured hexagon must be taken by the line of that colour.' : '')]);
+    if (hasV('o')) rules.push([{ v: 1, t: 'o' }, 'Ring: the line must pass through it and keep going straight.']);
+    if (hasV('k')) rules.push([{ v: 1, t: 'k' }, 'Diamond: the line must pass through it and turn there.']);
+    if (hasV('a')) rules.push([{ v: 1, t: 'a', k: 0 }, 'Letters: the line must pass through all of them in alphabetical order — A, then B, then C…']);
     if (has('q')) rules.push([{ t: 'q', c: 1 }, 'Squares of different colours must end up in different areas.']);
     if (has('s')) rules.push([{ t: 's', c: 0 }, 'Each star needs exactly one partner of its own colour in its area — another star or any other symbol of that colour. Other colours do not matter.']);
     if (has('t')) rules.push([{ t: 't', n: 2, c: 7 }, 'The line must run along exactly as many sides of this cell as there are triangles.']);
     if (has('p')) rules.push([{ t: 'p', mask: 0x13, rot: 0, c: 5 }, 'The area around a shape must be exactly that shape. Several shapes in one area fit together to fill it. A tilted shape may be rotated; an upright one may not.']);
     if (has('n')) rules.push([{ t: 'n', mask: 1, rot: 0, c: 6 }, 'A hollow shape cancels that many cells of the solid shapes in its area. The rest must still fill the area exactly.']);
     if (has('x')) rules.push([{ t: 'x', c: 9 }, 'This mark removes one other symbol from its area — and it must have a wrong one to remove. Everything left has to be correct.']);
+    if (has('z')) rules.push([{ t: 'z', n: 4, c: 8 }, 'Number: the area the line cuts out around it must contain exactly that many cells.']);
+    if (has('f')) rules.push([{ t: 'f', n: 6, c: 8 }, 'Boxed number: its area must be a rectangle with exactly that many cells.']);
+    if (has('e')) rules.push([{ t: 'e', n: 5, c: 4 }, 'Lookout: it looks up, down, left and right. Count its own cell plus every cell in a straight line until the line (or the rim) blocks the view — the total must match.']);
     const body = $('helpBody');
     body.textContent = '';
     rules.forEach(r => {
@@ -942,7 +1193,7 @@ window.LEVELS = [
       row.appendChild(icon(r[0])); row.appendChild(txt); body.appendChild(row);
     });
     const tip = document.createElement('p');
-    tip.innerHTML = '<small>Mouse: click a circle, steer, click on the tip to finish (or just drag). Touch: drag from a circle and lift at the tip. ' +
+    tip.innerHTML = '<small>Mouse: click the circle, steer, click on the tip to finish (or just drag). Touch: drag from the circle and lift at the tip. ' +
       'Keyboard: arrows, Enter, Backspace, Esc. Right-click or Clear starts over.</small>';
     body.appendChild(tip);
     $('help').hidden = false;
@@ -952,8 +1203,8 @@ window.LEVELS = [
   $('menuClose').addEventListener('click', () => { $('menu').hidden = true; });
   $('helpBtn').addEventListener('click', openHelp);
   $('helpClose').addEventListener('click', () => { $('help').hidden = true; });
-  $('prevBtn').addEventListener('click', () => load(cur - 1));
-  $('nextBtn').addEventListener('click', () => load(cur + 1));
+  $('prevBtn').addEventListener('click', () => load(pk, cur - 1));
+  $('nextBtn').addEventListener('click', () => load(pk, cur + 1));
   $('resetBtn').addEventListener('click', reset);
   let wipeArmed = 0;                    // second press within a few seconds confirms
   $('wipeBtn').addEventListener('click', () => {
@@ -965,16 +1216,20 @@ window.LEVELS = [
     }
     wipeArmed = 0;
     $('wipeBtn').textContent = 'Erase progress';
-    save = { solved: {}, cur: 0 }; persist(); $('menu').hidden = true; load(0);
+    save = { solved: {} }; persist(); $('menu').hidden = true; load(0, 0);
   });
   window.addEventListener('resize', resize);
+  // numbers and letters are drawn with the web font: repaint once it has arrived
+  if (document.fonts && document.fonts.load) document.fonts.load('600 20px Jost').then(() => draw(), () => {});
 
-  const first = LEVELS.findIndex((_, i) => !save.solved[i]);
-  load(typeof save.cur === 'number' ? save.cur : Math.max(0, first));
+  // resume where the player left off; anyone new (or coming from the first release) starts on the new pack
+  const at = Array.isArray(save.at) ? save.at : null;
+  const startPack = at ? Math.max(0, PACKS.findIndex(p => p.id === at[0])) : 0;
+  load(startPack, at ? at[1] | 0 : 0);
 
   // small hook for automated checks
   window.__game = {
-    load, state: () => ({ cur, mode, path: path.map(v => v.slice()), bad: Array.from(bad) }),
+    packs: PACKS, load, state: () => ({ pack: pack.id, cur, mode, path: path.map(v => v.slice()), bad: Array.from(bad) }),
     play: pts => { begin(pts[0]); for (let k = 1; k < pts.length; k++) tryStep(Math.sign(pts[k][0] - pts[k - 1][0]), Math.sign(pts[k][1] - pts[k - 1][1])); draw(); if (isAtEnd()) submit(); return mode; }
   };
 })();
