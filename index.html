@@ -1,0 +1,983 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="One hundred line-drawing panel puzzles.">
+<title>Hundred Panels</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Jost:wght@400;600&display=swap">
+<style>
+  /* One screen: slim bar, the panel as large as it fits, three controls. One dark look by design. */
+  :root {
+    --bg: #14161a; --fg: #e9e9e4; --mut: #8b909a; --btn: #242930; --btn-hi: #323943; --acc: #f7c92e; --acc-ink: #1b1a12;
+    --veil: rgba(12, 13, 16, .96); --done-bg: #3d4a2b; --done-fg: #d8eeb4; --soft: #cfd0cb;
+    --ui: 'Jost', system-ui, -apple-system, 'Segoe UI', sans-serif;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--fg); font: 16px/1.45 var(--ui);
+    display: flex; flex-direction: column; overflow: hidden;
+    user-select: none; -webkit-user-select: none; overscroll-behavior: none;
+  }
+  header, footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; max-width: 720px; margin: 0 auto; padding: 10px 16px; }
+  #title { text-align: center; line-height: 1.2; }
+  #lvNum { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  #lvSec { display: block; font-size: 12px; color: var(--mut); letter-spacing: .04em; text-transform: uppercase; }
+  #stage { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 2px 16px; }
+  canvas { display: block; touch-action: none; cursor: pointer; }
+  #status { height: 26px; text-align: center; color: var(--mut); font-size: 14px; padding: 0 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #status.ok { color: var(--acc); }
+  button {
+    font: inherit; color: var(--fg); background: var(--btn); border: 0; border-radius: 9px;
+    min-width: 44px; min-height: 40px; padding: 0 14px; cursor: pointer;
+  }
+  button:hover { background: var(--btn-hi); }
+  button:disabled { opacity: .35; cursor: default; }
+  button.glow { background: var(--acc); color: var(--acc-ink); font-weight: 600; }
+  button:focus-visible { outline: 2px solid var(--acc); outline-offset: 2px; }
+  footer button { flex: 1; }
+
+  .overlay { position: fixed; inset: 0; background: var(--veil); display: flex; flex-direction: column; align-items: center; overflow-y: auto; padding: 14px 16px 40px; z-index: 5; }
+  .overlay[hidden] { display: none; }
+  .sheet { width: 100%; max-width: 560px; }
+  .sheet-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+  .sheet-head h1 { font-size: 20px; margin: 0; font-weight: 600; }
+  .sec-name { margin: 18px 0 8px; font-size: 12px; color: var(--mut); letter-spacing: .05em; text-transform: uppercase; }
+  .lv-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(46px, 1fr)); gap: 7px; }
+  .lv-grid button { min-width: 0; padding: 0; height: 44px; font-variant-numeric: tabular-nums; }
+  .lv-grid button.solved { background: var(--done-bg); color: var(--done-fg); }
+  .lv-grid button.here { outline: 2px solid var(--acc); }
+  #helpBody p { margin: 10px 0; color: var(--soft); }
+  #helpBody .rule { display: flex; gap: 12px; align-items: center; margin: 12px 0; }
+  #helpBody .rule canvas { flex: none; border-radius: 8px; cursor: default; }
+  #helpBody small, .small { color: var(--mut); font-size: 13px; }
+  .linkish { background: none; color: var(--mut); text-decoration: underline; min-height: 0; padding: 4px 0; }
+  .linkish:hover { background: none; color: var(--fg); }
+</style>
+</head>
+<body>
+<header>
+  <button id="menuBtn" aria-label="All levels">&#9776;</button>
+  <div id="title"><span id="lvNum"></span><span id="lvSec"></span></div>
+  <button id="helpBtn" aria-label="Rules">?</button>
+</header>
+<div id="stage"><canvas id="cv"></canvas></div>
+<div id="status"></div>
+<footer>
+  <button id="prevBtn">&#8249; Prev</button>
+  <button id="resetBtn">Clear</button>
+  <button id="nextBtn">Next &#8250;</button>
+</footer>
+
+<div id="menu" class="overlay" hidden>
+  <div class="sheet">
+    <div class="sheet-head"><h1>Hundred Panels</h1><button id="menuClose" aria-label="Close">&#10005;</button></div>
+    <div class="small" id="progress"></div>
+    <div id="menuBody"></div>
+    <p class="small" style="margin-top:26px">A small fan-made homage to the panel puzzles of <i>The Witness</i>. Progress is saved in this browser.
+      <button class="linkish" id="wipeBtn">Erase progress</button></p>
+  </div>
+</div>
+
+<div id="help" class="overlay" hidden>
+  <div class="sheet">
+    <div class="sheet-head"><h1>Rules on this panel</h1><button id="helpClose" aria-label="Close">&#10005;</button></div>
+    <div id="helpBody"></div>
+  </div>
+</div>
+
+<script>
+/* Rules engine for the line-panel puzzles. Shared by the game and the level generator.
+ *
+ * Coordinates use a doubled grid of (2w+1) x (2h+1) points:
+ *   even,even = vertex     odd,odd = cell     mixed = edge        index = y*gw + x
+ *
+ * Level format:
+ *   w, h   size in cells
+ *   sym    'h' (left-right mirror) | 'v' (top-bottom mirror) | 'r' (180° rotation) | absent
+ *   s, e   start / end vertices [[x,y],...]
+ *   g      broken edges [[x,y,kind]]   kind 2 = edge missing entirely
+ *   d      hexagons [[x,y,line]]       line 1 / 2 = only that line may take it
+ *   c      cell symbols [[x,y,type,...]]
+ *            'q',colour  square        's',colour  star       't',n  triangles
+ *            'p',mask,rot  shape       'n',mask,rot  hollow shape      'x'  eliminator
+ */
+(function (root) {
+  'use strict';
+  const E = {};
+
+  // ---- shapes: 16-bit mask on a 4x4 box, bit = y*4+x -------------------------------
+  function norm(cells) {
+    let mx = 99, my = 99;
+    for (const c of cells) { if (c[0] < mx) mx = c[0]; if (c[1] < my) my = c[1]; }
+    const out = cells.map(c => [c[0] - mx, c[1] - my]);
+    out.sort((a, b) => a[1] - b[1] || a[0] - b[0]);
+    return out;
+  }
+  E.norm = norm;
+  E.maskCells = function (mask) {
+    const out = [];
+    for (let i = 0; i < 16; i++) if (mask >> i & 1) out.push([i & 3, i >> 2]);
+    return out;
+  };
+  E.cellsMask = function (cells) {
+    let m = 0;
+    for (const c of norm(cells)) m |= 1 << (c[1] * 4 + c[0]);
+    return m;
+  };
+  const rotCache = {};
+  // Distinct orientations of a shape (rotations only, never mirrored). Cells are sorted
+  // row-major, so cells[0] is the anchor used when tiling.
+  E.rotations = function (mask, rot) {
+    const key = mask + (rot ? 'r' : '');
+    if (rotCache[key]) return rotCache[key];
+    const out = [], seen = {};
+    let cells = norm(E.maskCells(mask));
+    for (let k = 0; k < (rot ? 4 : 1); k++) {
+      const m = E.cellsMask(cells);
+      if (!seen[m]) {
+        seen[m] = 1;
+        let bw = 0, bh = 0;
+        for (const c of cells) { if (c[0] >= bw) bw = c[0] + 1; if (c[1] >= bh) bh = c[1] + 1; }
+        cells.bw = bw; cells.bh = bh;
+        out.push(cells);
+      }
+      cells = norm(cells.map(c => [-c[1], c[0]]));
+    }
+    return (rotCache[key] = out);
+  };
+
+  // Colour ids of the symbols that have a fixed colour (used by the star rule).
+  E.SYM_COLOR = { t: 7, p: 5, n: 6, x: 9 };
+
+  // ---- per-level lookup tables ------------------------------------------------------
+  E.prep = function (P) {
+    if (P._c) return P._c;
+    const w = P.w, h = P.h, gw = 2 * w + 1, gh = 2 * h + 1, n = gw * gh;
+    const C = { P, w, h, gw, gh, n, sym: P.sym || 0 };
+    C.gap = new Uint8Array(n); C.start = new Uint8Array(n); C.end = new Uint8Array(n);
+    C.dotAt = new Int16Array(n).fill(-1); C.symAt = new Int16Array(n).fill(-1);
+    C.mir = new Int32Array(n);
+    for (let y = 0; y < gh; y++) for (let x = 0; x < gw; x++) {
+      const mx = (C.sym === 'h' || C.sym === 'r') ? gw - 1 - x : x;
+      const my = (C.sym === 'v' || C.sym === 'r') ? gh - 1 - y : y;
+      C.mir[y * gw + x] = my * gw + mx;
+    }
+    (P.g || []).forEach(g => { C.gap[g[1] * gw + g[0]] = g[2] || 1; });
+    (P.d || []).forEach((d, i) => { C.dotAt[d[1] * gw + d[0]] = i; });
+    P.s.forEach(v => { C.start[v[1] * gw + v[0]] = 1; });
+    P.e.forEach(v => { C.end[v[1] * gw + v[0]] = 1; });
+    C.syms = (P.c || []).map((a, i) => {
+      const s = { i, x: a[0], y: a[1], pos: a[1] * gw + a[0], t: a[2], name: 'c' + i };
+      s.c = (s.t === 'q' || s.t === 's') ? a[3] : E.SYM_COLOR[s.t];
+      if (s.t === 't') s.n = a[3];
+      if (s.t === 'p' || s.t === 'n') {
+        s.mask = a[3]; s.rot = a[4] ? 1 : 0;
+        s.rots = E.rotations(s.mask, s.rot); s.size = s.rots[0].length; s.key = s.mask + ':' + s.rot;
+      }
+      C.symAt[s.pos] = i;
+      return s;
+    });
+    C.dotItems = (P.d || []).map((d, i) => ({ t: 'd', name: 'd' + i, c: -1 }));
+    C.stamp = new Int32Array(n); C.stampN = 0;
+    Object.defineProperty(P, '_c', { value: C, writable: true, configurable: true });
+    return C;
+  };
+
+  E.mirror = function (C, x, y) {
+    const m = C.mir[y * C.gw + x];
+    return [m % C.gw, (m / C.gw) | 0];
+  };
+
+  // May the line head at vertex (x,y) advance one vertex in direction (dx,dy)?
+  // In symmetry puzzles the mirrored line moves too and the two lines may never meet.
+  E.stepOK = function (C, occ, x, y, dx, dy) {
+    const nx = x + 2 * dx, ny = y + 2 * dy;
+    if (nx < 0 || ny < 0 || nx >= C.gw || ny >= C.gh) return false;
+    const np = ny * C.gw + nx, ep = (y + dy) * C.gw + x + dx;
+    if (occ[np] || C.gap[ep]) return false;
+    if (C.sym) {
+      const mp = C.mir[np];
+      if (mp === np || occ[mp] || C.gap[C.mir[ep]]) return false;
+    }
+    return true;
+  };
+
+  E.atEnd = function (C, x, y) {
+    const p = y * C.gw + x;
+    return !!C.end[p] && (!C.sym || !!C.end[C.mir[p]]);
+  };
+
+  // Occupancy of the doubled grid: 0 free, 1 the drawn line, 2 its mirror image.
+  E.occOf = function (C, path) {
+    const occ = new Uint8Array(C.n), gw = C.gw;
+    for (let k = 0; k < path.length; k++) {
+      const p = path[k][1] * gw + path[k][0];
+      occ[p] = 1;
+      if (C.sym) occ[C.mir[p]] = 2;
+      if (k) {
+        const e = ((path[k][1] + path[k - 1][1]) >> 1) * gw + ((path[k][0] + path[k - 1][0]) >> 1);
+        occ[e] = 1;
+        if (C.sym) occ[C.mir[e]] = 2;
+      }
+    }
+    return occ;
+  };
+
+  // Areas the lines cut the panel into; each is a list of cell indices.
+  E.regions = function (C, occ) {
+    const gw = C.gw, gh = C.gh, seen = new Uint8Array(C.n), out = [];
+    for (let y = 1; y < gh; y += 2) for (let x = 1; x < gw; x += 2) {
+      const p0 = y * gw + x;
+      if (seen[p0]) continue;
+      const cells = [p0]; seen[p0] = 1;
+      for (let k = 0; k < cells.length; k++) {
+        const p = cells[k], px = p % gw, py = (p / gw) | 0;
+        if (px > 1 && !occ[p - 1] && !seen[p - 2]) { seen[p - 2] = 1; cells.push(p - 2); }
+        if (px < gw - 2 && !occ[p + 1] && !seen[p + 2]) { seen[p + 2] = 1; cells.push(p + 2); }
+        if (py > 1 && !occ[p - gw] && !seen[p - 2 * gw]) { seen[p - 2 * gw] = 1; cells.push(p - 2 * gw); }
+        if (py < gh - 2 && !occ[p + gw] && !seen[p + 2 * gw]) { seen[p + 2 * gw] = 1; cells.push(p + 2 * gw); }
+      }
+      out.push(cells);
+    }
+    return out;
+  };
+
+  function edgeCount(C, occ, p) {
+    return (occ[p - 1] ? 1 : 0) + (occ[p + 1] ? 1 : 0) + (occ[p - C.gw] ? 1 : 0) + (occ[p + C.gw] ? 1 : 0);
+  }
+
+  // Can the shapes tile the area exactly? Hollow shapes each cancel one layer of a solid
+  // shape, so solids may overlap or stick out of the area wherever a hollow one cancels them.
+  function polyFit(C, cells, polys, negs) {
+    const w = C.w, h = C.h, gw = C.gw;
+    let net = 0;
+    for (const s of polys) net += s.size;
+    for (const s of negs) net -= s.size;
+    if (net < 0 || !polys.length) return false;
+    if (net > 0 && net !== cells.length) return false;
+    const need = new Int8Array(w * h);
+    if (net > 0) for (const p of cells) need[(((p / gw) | 0) >> 1) * w + ((p % gw) >> 1)] = 1;
+    const used = new Uint8Array(polys.length);
+
+    function placePos(left) {
+      if (left === 0) return true;
+      let t = 0;
+      while (t < need.length && need[t] <= 0) t++;
+      if (t === need.length) return false;
+      const tx = t % w, ty = (t / w) | 0;
+      for (let a = 0; a < polys.length; a++) {
+        if (used[a]) continue;
+        let dup = false;
+        for (let b = 0; b < a; b++) if (!used[b] && polys[b].key === polys[a].key) { dup = true; break; }
+        if (dup) continue;
+        const rots = polys[a].rots;
+        for (let r = 0; r < rots.length; r++) {
+          const sh = rots[r], ox = tx - sh[0][0], oy = ty - sh[0][1];
+          let ok = true;
+          for (let c = 0; c < sh.length; c++) {
+            const x = ox + sh[c][0], y = oy + sh[c][1];
+            if (x < 0 || y < 0 || x >= w || y >= h || need[y * w + x] <= 0) { ok = false; break; }
+          }
+          if (!ok) continue;
+          for (let c = 0; c < sh.length; c++) need[(oy + sh[c][1]) * w + ox + sh[c][0]]--;
+          used[a] = 1;
+          const hit = placePos(left - 1);
+          used[a] = 0;
+          for (let c = 0; c < sh.length; c++) need[(oy + sh[c][1]) * w + ox + sh[c][0]]++;
+          if (hit) return true;
+        }
+      }
+      return false;
+    }
+    function placeNeg(k) {
+      if (k === negs.length) return placePos(polys.length);
+      const rots = negs[k].rots;
+      for (let r = 0; r < rots.length; r++) {
+        const sh = rots[r];
+        for (let oy = 0; oy + sh.bh <= h; oy++) for (let ox = 0; ox + sh.bw <= w; ox++) {
+          for (let c = 0; c < sh.length; c++) need[(oy + sh[c][1]) * w + ox + sh[c][0]]++;
+          const hit = placeNeg(k + 1);
+          for (let c = 0; c < sh.length; c++) need[(oy + sh[c][1]) * w + ox + sh[c][0]]--;
+          if (hit) return true;
+        }
+      }
+      return false;
+    }
+    return placeNeg(0);
+  }
+
+  // Symbols of one area that break their rule (no eliminators taken into account).
+  function baseBad(C, occ, cells, S) {
+    const cnt = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0], polys = [], negs = [], bad = [];
+    let sq = -1, mixed = false;
+    for (const s of S) {
+      if (s.t === 'd') continue;
+      cnt[s.c]++;
+      if (s.t === 'q') { if (sq < 0) sq = s.c; else if (sq !== s.c) mixed = true; }
+      else if (s.t === 'p') polys.push(s);
+      else if (s.t === 'n') negs.push(s);
+    }
+    const polyOK = polys.length + negs.length === 0 || polyFit(C, cells, polys, negs);
+    for (const s of S) {
+      if (s.t === 'd') bad.push(s);                                   // hexagon the line missed
+      else if (s.t === 'q') { if (mixed) bad.push(s); }
+      else if (s.t === 's') { if (cnt[s.c] !== 2) bad.push(s); }
+      else if (s.t === 't') { if (edgeCount(C, occ, s.pos) !== s.n) bad.push(s); }
+      else if (s.t === 'p' || s.t === 'n') { if (!polyOK) bad.push(s); }
+      else bad.push(s);                                               // eliminator with nothing to do
+    }
+    return bad;
+  }
+
+  // Names ('c3', 'd0', ...) of the symbols that are wrong in one area; empty when the area is fine.
+  E.regionBad = function (C, occ, cells) {
+    const gw = C.gw, st = ++C.stampN, stamp = C.stamp, items = [];
+    const nb = [-gw - 1, -gw, -gw + 1, -1, 1, gw - 1, gw, gw + 1];
+    for (let i = 0; i < cells.length; i++) {
+      const p = cells[i];
+      if (C.symAt[p] >= 0) items.push(C.syms[C.symAt[p]]);
+      for (let k = 0; k < 8; k++) {
+        const q = p + nb[k];
+        if (C.dotAt[q] >= 0 && !occ[q] && stamp[q] !== st) { stamp[q] = st; items.push(C.dotItems[C.dotAt[q]]); }
+      }
+    }
+    if (!items.length) return [];
+    const elims = [], S = [];
+    for (const it of items) (it.t === 'x' ? elims : S).push(it);
+    if (!elims.length) return baseBad(C, occ, cells, S).map(s => s.name);
+
+    // Every eliminator must remove exactly one symbol that would otherwise be wrong
+    // (two eliminators may also cancel each other).
+    function tryRemove(k) {
+      const idx = [];
+      function rec(from) {
+        if (idx.length === k) {
+          const rest = S.filter((_, i) => idx.indexOf(i) < 0);
+          if (baseBad(C, occ, cells, rest).length) return false;
+          for (let a = 0; a < k; a++) if (!baseBad(C, occ, cells, rest.concat([S[idx[a]]])).length) return false;
+          return true;
+        }
+        for (let i = from; i < S.length; i++) { idx.push(i); if (rec(i + 1)) return true; idx.pop(); }
+        return false;
+      }
+      return rec(0);
+    }
+    for (let j = 0; 2 * j <= elims.length; j++) {
+      const k = elims.length - 2 * j;
+      if (k <= S.length && tryRemove(k)) return [];
+    }
+    return baseBad(C, occ, cells, S).concat(elims).map(s => s.name);
+  };
+
+  E.validateOcc = function (C, occ) {
+    const bad = [], d = C.P.d || [];
+    for (let i = 0; i < d.length; i++) {
+      const o = occ[d[i][1] * C.gw + d[i][0]];
+      if (o && d[i][2] && d[i][2] !== o) bad.push('d' + i);          // taken by the wrong line
+    }
+    const regs = E.regions(C, occ);
+    for (let r = 0; r < regs.length; r++) {
+      const b = E.regionBad(C, occ, regs[r]);
+      for (let k = 0; k < b.length; k++) bad.push(b[k]);
+    }
+    return { ok: bad.length === 0, bad };
+  };
+
+  // path: vertices of the drawn line, [[x,y],...] from a start to an end.
+  E.validate = function (P, path) {
+    const C = E.prep(P);
+    return E.validateOcc(C, E.occOf(C, path));
+  };
+
+  root.Engine = E;
+})(typeof self !== 'undefined' ? self : this);
+</script>
+<script>
+/* Generated by tools/gen.html — do not edit by hand. */
+window.SECTIONS = [{"name":"Lines","hue":205},{"name":"Hexagons","hue":150},{"name":"Squares","hue":265},{"name":"Stars","hue":215},{"name":"Triangles","hue":180},{"name":"Shapes","hue":235},{"name":"Hollow shapes","hue":20},{"name":"Eliminators","hue":300},{"name":"Symmetry","hue":120},{"name":"Everything","hue":345}];
+window.LEVELS = [
+{"sec":0,"w":1,"h":1,"s":[[0,2]],"e":[[2,0]]},
+{"sec":0,"w":2,"h":2,"s":[[0,4]],"e":[[4,0]],"g":[[4,3],[0,3],[4,1]]},
+{"sec":0,"w":3,"h":3,"s":[[0,6]],"e":[[0,2]],"g":[[2,1,2],[4,1,2],[1,2,2],[3,2,2],[0,3,2],[4,3,2],[5,4,2],[2,5,2],[1,6,2]]},
+{"sec":0,"w":4,"h":4,"s":[[0,8]],"e":[[4,8]],"g":[[1,0,2],[5,0,2],[3,2,2],[7,2,2],[4,3,2],[6,3,2],[1,4,2],[3,4,2],[7,4,2],[1,6,2],[3,6,2],[5,6,2],[6,7,2],[1,8,2],[3,8,2],[5,8,2]]},
+{"sec":0,"w":5,"h":5,"s":[[6,10]],"e":[[10,0]],"g":[[5,0,2],[2,1,2],[8,1,2],[10,1,2],[3,2,2],[7,2,2],[4,3,2],[6,3,2],[8,3,2],[1,4,2],[3,4,2],[9,4,2],[0,5,2],[4,5,2],[8,5,2],[5,6,2],[2,7,2],[4,7,2],[6,7,2],[1,8,2],[9,8,2],[2,9,2],[6,9,2],[8,9,2],[5,10,2]]},
+{"sec":0,"w":6,"h":6,"s":[[0,12]],"e":[[12,4]],"g":[[3,0,2],[4,1,2],[8,1,2],[1,2,2],[5,2,2],[9,2,2],[11,2,2],[0,3,2],[8,3,2],[10,3,2],[12,3,2],[3,4,2],[5,4,2],[7,4,2],[2,5,2],[4,5,2],[8,5,2],[10,5,2],[3,6,2],[7,6,2],[0,7,2],[10,7,2],[1,8,2],[5,8,2],[7,8,2],[11,8,2],[2,9,2],[6,9,2],[8,9,2],[12,9,2],[3,10,2],[9,10,2],[2,11,2],[8,11,2],[10,11,2],[5,12,2]]},
+{"sec":0,"w":7,"h":7,"s":[[0,14],[4,10]],"e":[[14,6],[14,14]],"g":[[11,0,2],[13,0,2],[2,1,2],[4,1,2],[8,1,2],[1,2,2],[7,2,2],[11,2,2],[0,3,2],[4,3,2],[8,3,2],[10,3,2],[3,4,2],[7,4,2],[13,4,2],[2,5,2],[12,5,2],[1,6,2],[3,6,2],[5,6,2],[9,6,2],[13,6,2],[4,7,2],[6,7,2],[8,7,2],[10,7,2],[12,7,2],[14,7,2],[1,8,2],[9,8,2],[11,8,2],[4,9,2],[6,9,2],[12,9,2],[1,10,2],[5,10,2],[9,10,2],[13,10,2],[2,11,2],[8,11,2],[3,12,2],[5,12,2],[9,12,2],[11,12,2],[0,13,2],[4,13,2],[6,13,2],[10,13,2],[14,13,2],[5,14,2],[11,14,2]]},
+{"sec":0,"w":8,"h":8,"s":[[10,8],[12,14],[10,14]],"e":[[16,6],[0,16],[0,12]],"g":[[3,0,2],[13,0,2],[0,1,2],[4,1,2],[6,1,2],[10,1,2],[5,2,2],[9,2,2],[11,2,2],[15,2,2],[2,3,2],[8,3,2],[12,3,2],[14,3,2],[1,4,2],[3,4,2],[7,4,2],[9,4,2],[4,5,2],[6,5,2],[10,5,2],[12,5,2],[14,5,2],[3,6,2],[7,6,2],[13,6,2],[15,6,2],[2,7,2],[6,7,2],[10,7,2],[16,7,2],[1,8,2],[5,8,2],[7,8,2],[9,8,2],[11,8,2],[4,9,2],[12,9,2],[14,9,2],[7,10,2],[9,10,2],[15,10,2],[0,11,2],[2,11,2],[6,11,2],[10,11,2],[12,11,2],[3,12,2],[5,12,2],[9,12,2],[13,12,2],[15,12,2],[2,13,2],[8,13,2],[12,13,2],[1,14,2],[3,14,2],[7,14,2],[13,14,2],[6,15,2],[8,15,2],[10,15,2],[16,15,2],[1,16,2],[11,16,2],[13,16,2]]},
+{"sec":1,"w":2,"h":2,"s":[[0,4]],"e":[[4,0]],"d":[[1,2],[3,2]]},
+{"sec":1,"w":3,"h":3,"s":[[0,6]],"e":[[6,0]],"d":[[2,3],[1,2],[1,4]]},
+{"sec":1,"w":3,"h":3,"s":[[4,6]],"e":[[6,0]],"d":[[4,5],[2,1],[4,3]]},
+{"sec":1,"w":4,"h":4,"s":[[0,0]],"e":[[8,0]],"d":[[4,1],[3,2],[7,4],[2,1]]},
+{"sec":1,"w":4,"h":4,"s":[[8,0]],"e":[[8,8]],"g":[[2,1],[1,8]],"d":[[8,5],[5,2],[6,7],[8,1],[4,3],[7,8]]},
+{"sec":1,"w":4,"h":4,"s":[[0,2]],"e":[[2,8]],"d":[[2,3],[2,4],[2,2],[4,1],[1,8],[2,5]]},
+{"sec":1,"w":5,"h":5,"s":[[0,10]],"e":[[10,6]],"g":[[6,9],[7,8],[4,3]],"d":[[1,6],[8,8],[7,10],[3,6],[2,8],[10,7],[5,6]]},
+{"sec":1,"w":5,"h":5,"s":[[10,0]],"e":[[0,8]],"g":[[9,6],[10,7],[5,10],[9,4],[0,1]],"d":[[2,5],[1,10],[5,0],[3,2],[2,7],[8,0],[0,2],[10,2]]},
+{"sec":2,"w":2,"h":2,"s":[[0,4]],"e":[[4,0]],"c":[[3,1,"q",1],[1,1,"q",0]]},
+{"sec":2,"w":3,"h":3,"s":[[0,6]],"e":[[6,0]],"c":[[3,1,"q",0],[5,1,"q",1],[3,3,"q",1],[1,1,"q",1]]},
+{"sec":2,"w":3,"h":3,"s":[[0,0]],"e":[[2,6]],"c":[[1,3,"q",1],[1,5,"q",0],[3,3,"q",0],[1,1,"q",0]]},
+{"sec":2,"w":4,"h":4,"s":[[0,8]],"e":[[8,8]],"c":[[3,7,"q",0],[7,3,"q",1],[7,7,"q",0],[1,7,"q",1],[3,5,"q",1],[5,7,"q",1]]},
+{"sec":2,"w":4,"h":4,"s":[[0,8]],"e":[[8,8]],"c":[[7,7,"q",0],[7,3,"q",1],[5,7,"q",1],[1,3,"q",1],[3,1,"q",1],[7,1,"q",0],[3,3,"q",1],[1,5,"q",0],[3,5,"q",0],[5,3,"q",0]]},
+{"sec":2,"w":4,"h":4,"s":[[6,8]],"e":[[6,0]],"c":[[3,1,"q",0],[1,5,"q",1],[5,3,"q",0],[5,7,"q",1],[1,1,"q",1],[3,3,"q",1],[3,5,"q",0],[7,7,"q",0],[3,7,"q",1]]},
+{"sec":2,"w":4,"h":4,"s":[[8,0]],"e":[[6,8]],"c":[[3,1,"q",0],[5,7,"q",1],[7,3,"q",2],[3,3,"q",0],[3,5,"q",0],[7,5,"q",1],[3,7,"q",0]]},
+{"sec":2,"w":4,"h":4,"s":[[6,8]],"e":[[6,0]],"g":[[7,8],[1,4]],"c":[[1,1,"q",2],[5,7,"q",2],[7,3,"q",0],[3,5,"q",0],[5,3,"q",1],[1,7,"q",2],[3,7,"q",2],[7,1,"q",1],[1,3,"q",0]]},
+{"sec":2,"w":5,"h":5,"s":[[10,10]],"e":[[0,8]],"c":[[7,5,"q",0],[1,7,"q",1],[1,9,"q",0],[3,5,"q",1],[7,9,"q",1],[5,1,"q",1],[7,1,"q",1],[5,3,"q",1],[9,5,"q",1],[5,7,"q",1],[7,3,"q",1],[9,1,"q",1],[1,3,"q",1],[5,5,"q",1],[3,1,"q",1],[3,9,"q",0]]},
+{"sec":2,"w":5,"h":5,"s":[[10,2]],"e":[[2,0]],"c":[[9,1,"q",0],[1,9,"q",1],[1,1,"q",0],[1,7,"q",2],[3,7,"q",1],[3,1,"q",2],[5,3,"q",2],[3,5,"q",1],[9,5,"q",1],[3,9,"q",1],[3,3,"q",2],[5,5,"q",1],[7,5,"q",1],[5,9,"q",1]]},
+{"sec":3,"w":2,"h":2,"s":[[0,4]],"e":[[4,0]],"c":[[1,1,"s",0],[3,1,"s",0],[3,3,"s",0],[1,3,"s",0]]},
+{"sec":3,"w":3,"h":3,"s":[[0,6]],"e":[[6,0]],"c":[[5,5,"s",0],[5,1,"s",0],[3,1,"s",0],[3,3,"s",0],[1,3,"s",0],[1,1,"s",0]]},
+{"sec":3,"w":3,"h":3,"s":[[6,0]],"e":[[6,6]],"c":[[3,3,"s",0],[3,1,"s",0],[1,5,"s",0],[1,1,"s",0],[5,3,"s",0],[5,1,"s",0]]},
+{"sec":3,"w":4,"h":4,"s":[[2,8]],"e":[[0,0]],"c":[[5,3,"s",0],[5,1,"s",0],[7,5,"s",0],[7,1,"s",0],[1,1,"s",0],[1,3,"s",0],[3,1,"s",0],[3,5,"s",0]]},
+{"sec":3,"w":4,"h":4,"s":[[8,8]],"e":[[8,0]],"c":[[1,3,"s",2],[3,1,"s",2],[7,7,"s",2],[7,3,"s",2],[5,3,"s",0],[3,3,"s",0],[3,7,"s",2],[1,7,"s",2],[3,5,"s",2],[5,7,"s",2]]},
+{"sec":3,"w":4,"h":4,"s":[[8,6]],"e":[[6,0]],"c":[[7,5,"s",2],[7,3,"s",2],[3,1,"s",2],[1,3,"s",2],[5,1,"s",0],[3,3,"s",0],[7,1,"s",2],[3,5,"s",2],[1,7,"s",2],[3,7,"s",2]]},
+{"sec":3,"w":3,"h":3,"s":[[0,6]],"e":[[4,0]],"c":[[3,5,"q",1],[3,1,"q",1],[1,5,"q",0],[3,3,"s",0],[5,5,"s",1]]},
+{"sec":3,"w":4,"h":4,"s":[[0,8]],"e":[[0,0]],"c":[[1,5,"q",0],[3,1,"q",0],[3,5,"q",1],[1,7,"q",1],[1,1,"s",0],[5,7,"s",0],[5,1,"s",0]]},
+{"sec":3,"w":4,"h":4,"s":[[8,0]],"e":[[8,8]],"c":[[1,1,"q",1],[1,5,"q",2],[5,1,"q",2],[7,1,"q",1],[7,5,"q",2],[5,3,"s",2],[3,5,"s",0],[3,3,"s",0],[7,7,"s",0],[1,7,"s",0],[1,3,"s",1]]},
+{"sec":3,"w":5,"h":5,"s":[[10,8]],"e":[[0,8]],"c":[[5,5,"q",1],[1,7,"q",1],[7,9,"q",0],[1,9,"q",0],[7,7,"q",1],[5,7,"q",0],[1,3,"s",1],[9,7,"s",0],[7,5,"s",0],[5,9,"s",2],[9,9,"s",2],[9,3,"s",1],[3,9,"s",1],[5,1,"s",0],[7,1,"s",0],[3,1,"s",2],[9,1,"s",2]]},
+{"sec":4,"w":2,"h":2,"s":[[0,4]],"e":[[4,0]],"c":[[3,1,"t",2],[3,3,"t",1]]},
+{"sec":4,"w":3,"h":3,"s":[[0,6]],"e":[[6,0]],"c":[[5,3,"t",2],[5,5,"t",1],[1,3,"t",1]]},
+{"sec":4,"w":3,"h":3,"s":[[6,0]],"e":[[0,4]],"c":[[5,5,"t",1],[3,5,"t",2],[5,1,"t",2],[5,3,"t",2]]},
+{"sec":4,"w":3,"h":3,"s":[[0,2]],"e":[[2,6]],"c":[[3,5,"t",2],[5,5,"t",2],[3,1,"t",1],[5,1,"t",2]]},
+{"sec":4,"w":4,"h":4,"s":[[0,0]],"e":[[8,6]],"c":[[7,1,"t",2],[3,3,"t",1],[5,3,"t",3],[1,1,"t",1],[7,7,"t",1]]},
+{"sec":4,"w":4,"h":4,"s":[[8,2]],"e":[[0,6]],"c":[[5,3,"t",1],[1,7,"t",2],[3,7,"t",2],[7,1,"t",3],[5,1,"t",1],[5,5,"t",2]]},
+{"sec":4,"w":4,"h":4,"s":[[8,8]],"e":[[8,0]],"g":[[5,4],[7,8]],"c":[[3,5,"t",1],[3,7,"t",2],[5,5,"t",1],[7,3,"t",1],[5,3,"t",1],[3,3,"t",2],[5,7,"t",3]]},
+{"sec":4,"w":4,"h":4,"s":[[0,0]],"e":[[8,0]],"c":[[5,1,"t",2],[7,1,"t",1],[3,1,"t",1],[3,3,"t",2],[3,5,"t",3],[1,1,"t",2]]},
+{"sec":4,"w":5,"h":5,"s":[[0,10]],"e":[[0,0]],"c":[[5,5,"t",3],[3,1,"t",1],[3,9,"t",3],[1,5,"t",1],[1,1,"t",3],[5,9,"t",1],[1,9,"t",3],[7,5,"t",1]]},
+{"sec":4,"w":5,"h":5,"s":[[2,4]],"e":[[10,10]],"c":[[3,7,"t",1],[7,5,"t",2],[3,3,"t",1],[1,1,"t",3],[7,7,"t",3],[3,1,"t",2],[9,5,"t",3],[1,7,"t",2],[7,3,"t",2],[7,9,"t",1]]},
+{"sec":5,"w":2,"h":2,"s":[[0,4]],"e":[[4,0]],"c":[[1,1,"p",49,0]]},
+{"sec":5,"w":3,"h":3,"s":[[0,6]],"e":[[6,0]],"c":[[1,1,"p",35,0],[1,5,"p",1860,0]]},
+{"sec":5,"w":3,"h":3,"s":[[6,0]],"e":[[4,6]],"c":[[1,5,"p",3,0],[5,1,"p",7,0]]},
+{"sec":5,"w":3,"h":3,"s":[[6,2]],"e":[[0,6]],"c":[[3,5,"p",3,0],[3,1,"p",7,0]]},
+{"sec":5,"w":4,"h":4,"s":[[8,6]],"e":[[6,0]],"c":[[1,1,"p",273,0],[7,3,"p",562,0]]},
+{"sec":5,"w":4,"h":4,"s":[[0,2]],"e":[[6,8]],"c":[[7,7,"p",3,0],[7,1,"p",17,0],[1,1,"p",17,0]]},
+{"sec":5,"w":4,"h":4,"s":[[6,8]],"e":[[0,4]],"c":[[7,1,"p",3,0],[1,1,"p",273,0],[7,7,"p",17,0]]},
+{"sec":5,"w":3,"h":3,"s":[[6,6]],"e":[[4,0]],"c":[[5,5,"p",116,1],[5,1,"p",3,1],[1,5,"p",17,1]]},
+{"sec":5,"w":4,"h":4,"s":[[2,0]],"e":[[8,4]],"c":[[5,1,"p",8754,1],[1,7,"p",4369,1]]},
+{"sec":5,"w":4,"h":4,"s":[[0,8]],"e":[[8,6]],"c":[[1,1,"p",3,0],[7,3,"p",17,1],[1,7,"p",7,0]]},
+{"sec":5,"w":5,"h":5,"s":[[10,0]],"e":[[10,10]],"c":[[5,9,"p",241,0],[1,1,"p",19,0],[7,1,"p",17,0]]},
+{"sec":5,"w":5,"h":5,"s":[[4,0]],"e":[[10,10]],"c":[[9,7,"p",17,0],[1,1,"p",3,1],[1,7,"p",17,0],[5,7,"p",17,0]]},
+{"sec":6,"w":3,"h":3,"s":[[0,6]],"e":[[6,0]],"c":[[3,1,"p",51,0],[1,1,"n",1,0]]},
+{"sec":6,"w":3,"h":3,"s":[[6,6]],"e":[[0,2]],"c":[[1,1,"p",305,0],[1,5,"n",1,0],[3,1,"p",817,0]]},
+{"sec":6,"w":4,"h":4,"s":[[0,8]],"e":[[8,0]],"c":[[5,5,"p",4898,0],[7,3,"n",1,0],[1,1,"p",273,0]]},
+{"sec":6,"w":4,"h":4,"s":[[4,8]],"e":[[6,0]],"c":[[3,7,"p",12561,0],[1,7,"n",17,0],[7,1,"p",17,0],[7,5,"p",17,0],[3,1,"p",3,0]]},
+{"sec":6,"w":4,"h":4,"s":[[0,8]],"e":[[0,0]],"c":[[1,3,"p",561,0],[1,1,"n",1,0],[3,7,"p",50,0],[1,7,"n",1,0],[7,7,"p",273,0]]},
+{"sec":6,"w":4,"h":4,"s":[[0,8]],"e":[[4,0]],"c":[[3,3,"p",63,0],[5,1,"n",17,0],[7,7,"p",15,1],[7,5,"n",3,1],[1,7,"p",3,0]]},
+{"sec":7,"w":3,"h":3,"s":[[0,6]],"e":[[6,0]],"c":[[5,3,"q",1],[3,3,"q",0],[1,1,"q",0],[5,1,"q",0],[3,1,"q",1],[1,5,"x"]]},
+{"sec":7,"w":4,"h":4,"s":[[0,0]],"e":[[2,8]],"c":[[1,3,"q",1],[5,7,"q",0],[7,1,"q",0],[1,1,"q",0],[7,3,"q",1],[7,5,"q",0],[3,7,"q",1],[5,1,"q",1],[5,5,"q",1],[3,5,"q",0],[3,1,"x"]]},
+{"sec":7,"w":3,"h":3,"s":[[6,6]],"e":[[2,0]],"d":[[0,1],[2,5],[4,3],[2,1],[3,2]],"c":[[3,3,"x"]]},
+{"sec":7,"w":4,"h":4,"s":[[8,8]],"e":[[4,0]],"g":[[3,0],[2,7]],"d":[[8,7],[8,3],[5,2],[6,0],[6,8],[6,7],[8,6]],"c":[[7,7,"x"]]},
+{"sec":7,"w":4,"h":4,"s":[[0,2]],"e":[[6,0]],"c":[[1,1,"s",2],[1,7,"s",2],[3,3,"s",3],[1,3,"s",3],[7,7,"s",3],[3,7,"s",3],[7,1,"s",3],[7,3,"s",3],[5,5,"s",3],[7,5,"s",3],[5,3,"s",2],[1,5,"x"]]},
+{"sec":7,"w":4,"h":4,"s":[[0,0]],"e":[[2,8]],"c":[[1,3,"t",1],[3,5,"t",1],[3,3,"t",2],[1,1,"t",2],[7,5,"t",3],[3,1,"t",1],[5,7,"t",2],[7,1,"t",2],[5,5,"x"]]},
+{"sec":7,"w":4,"h":4,"s":[[0,0]],"e":[[8,2]],"c":[[1,3,"p",3,0],[7,5,"p",3,0],[3,7,"p",12834,0],[7,3,"p",3,0],[1,7,"x"]]},
+{"sec":7,"w":4,"h":4,"s":[[6,0]],"e":[[2,8]],"c":[[1,5,"q",0],[3,3,"q",1],[5,3,"q",0],[7,5,"q",1],[1,3,"q",1],[7,3,"q",0],[1,7,"q",0],[5,5,"t",3],[1,1,"t",3],[3,5,"q",0],[7,7,"x"],[7,1,"t",3],[5,1,"x"]]},
+{"sec":8,"w":3,"h":3,"sym":"h","s":[[0,6],[6,6]],"e":[[0,0],[6,0]],"g":[[6,1],[0,1],[4,3],[2,3]]},
+{"sec":8,"w":4,"h":4,"sym":"h","s":[[0,8],[8,8]],"e":[[0,0],[8,0]],"g":[[0,1],[8,1],[1,4],[7,4],[2,5],[6,5],[0,7],[8,7]]},
+{"sec":8,"w":4,"h":4,"sym":"r","s":[[0,8],[8,0]],"e":[[8,8],[0,0]],"g":[[2,5],[6,3],[8,3],[0,5],[0,1],[8,7],[3,6],[5,2]]},
+{"sec":8,"w":5,"h":5,"sym":"r","s":[[4,8],[6,2]],"e":[[10,2],[0,8]],"g":[[7,10],[3,0],[1,10],[9,0],[4,3],[6,7],[8,3],[2,7],[3,8],[7,2],[10,3],[0,7],[0,3],[10,7]]},
+{"sec":8,"w":4,"h":4,"sym":"h","s":[[0,8],[8,8]],"e":[[0,0],[8,0]],"d":[[8,4],[0,2],[6,3],[6,7]]},
+{"sec":8,"w":5,"h":5,"sym":"v","s":[[10,10],[10,0]],"e":[[0,8],[0,2]],"g":[[4,3],[4,7],[0,5],[8,7],[8,3]],"d":[[6,10],[8,6],[10,9],[8,8],[3,6],[7,0]]},
+{"sec":8,"w":4,"h":4,"sym":"h","s":[[0,8],[8,8]],"e":[[0,0],[8,0]],"d":[[2,7,1],[7,0,2],[6,4,2],[0,2,1]]},
+{"sec":8,"w":5,"h":5,"sym":"r","s":[[0,10],[10,0]],"e":[[8,0],[2,10]],"d":[[4,0,1],[7,6,1],[10,10],[10,1,2],[4,6,1]]},
+{"sec":8,"w":6,"h":6,"sym":"h","s":[[4,12],[8,12]],"e":[[0,0],[12,0]],"g":[[5,8],[7,8],[12,1],[0,1],[10,9],[2,9]],"d":[[0,7,1],[2,10],[4,11,1],[3,4,1],[2,5,1],[8,2]]},
+{"sec":8,"w":4,"h":4,"sym":"h","s":[[8,0],[0,0]],"e":[[8,8],[0,8]],"c":[[7,5,"q",0],[7,1,"q",0],[7,7,"q",1],[1,1,"q",1],[1,5,"q",0],[5,5,"q",1]]},
+{"sec":8,"w":5,"h":5,"sym":"r","s":[[0,10],[10,0]],"e":[[10,10],[0,0]],"c":[[3,3,"t",2],[3,9,"t",3],[9,1,"t",3],[5,9,"t",1],[1,3,"t",2],[3,5,"t",1]]},
+{"sec":8,"w":6,"h":6,"sym":"r","s":[[12,10],[0,2]],"e":[[0,12],[12,0]],"d":[[4,8,2],[2,10,1],[8,6,1]],"c":[[11,3,"s",0],[11,7,"s",0],[1,11,"s",2],[7,9,"s",2],[7,7,"s",2],[1,9,"s",2],[3,1,"s",0],[7,1,"s",0],[1,3,"s",2],[1,1,"s",2]]},
+{"sec":9,"w":4,"h":4,"s":[[0,0]],"e":[[8,0]],"d":[[4,3],[7,8],[1,0]],"c":[[5,7,"q",1],[7,7,"q",0],[5,5,"q",1],[5,3,"q",0],[5,1,"q",1]]},
+{"sec":9,"w":4,"h":4,"s":[[4,8]],"e":[[4,0]],"d":[[8,4],[3,6],[2,7]],"c":[[5,5,"t",2],[3,7,"t",3],[5,3,"t",1],[5,1,"t",3]]},
+{"sec":9,"w":4,"h":4,"s":[[8,4]],"e":[[0,4]],"c":[[5,1,"q",1],[3,5,"q",0],[1,5,"q",1],[3,3,"q",1],[5,3,"t",1],[5,7,"t",1],[7,3,"t",1]]},
+{"sec":9,"w":4,"h":4,"s":[[6,8]],"e":[[0,0]],"c":[[5,1,"p",273,0],[7,3,"p",4369,0],[1,3,"p",273,0],[5,5,"q",1],[5,7,"q",0],[3,7,"q",0]]},
+{"sec":9,"w":4,"h":4,"s":[[0,0]],"e":[[8,0]],"c":[[3,1,"p",71,0],[1,1,"p",17,0],[7,1,"p",17,0],[3,7,"p",51,0],[1,7,"p",802,0],[7,7,"s",2],[7,5,"s",2],[1,5,"s",2],[7,3,"s",2],[5,1,"s",0],[5,3,"s",0]]},
+{"sec":9,"w":4,"h":4,"s":[[0,0]],"e":[[8,4]],"c":[[7,1,"p",35,0],[1,1,"p",17,0],[7,3,"t",2],[3,3,"t",1],[1,3,"t",3]]},
+{"sec":9,"w":4,"h":4,"s":[[8,0]],"e":[[6,8]],"d":[[4,4],[5,0],[6,0]],"c":[[5,3,"p",114,0],[3,7,"p",561,0],[1,7,"p",51,0],[1,1,"p",19,0]]},
+{"sec":9,"w":5,"h":5,"s":[[0,10]],"e":[[10,8]],"d":[[5,6],[8,9],[1,10],[4,10],[6,8]],"c":[[3,5,"q",1],[7,7,"q",0],[5,1,"q",1],[9,7,"q",1],[5,3,"q",1],[9,3,"q",1],[1,3,"q",1],[5,9,"s",3],[3,9,"s",3],[5,7,"s",3],[7,9,"s",3],[1,1,"s",2],[7,5,"s",2]]},
+{"sec":9,"w":5,"h":5,"s":[[10,10]],"e":[[8,0]],"c":[[9,5,"q",2],[1,9,"q",1],[1,1,"q",0],[7,9,"q",1],[3,9,"q",1],[9,7,"q",1],[7,1,"s",2],[3,1,"s",2],[7,7,"s",0],[3,5,"s",0],[5,9,"s",1],[1,5,"s",1],[9,3,"s",2],[9,9,"s",2],[7,5,"t",2],[9,1,"t",1],[1,3,"t",2]]},
+{"sec":9,"w":4,"h":4,"s":[[8,8]],"e":[[8,0]],"c":[[1,7,"p",19,0],[1,5,"p",55,0],[5,7,"p",50,0],[5,3,"p",54,0],[7,1,"q",1],[1,1,"q",0],[3,3,"q",0],[5,5,"q",1],[7,3,"x"]]},
+{"sec":9,"w":5,"h":5,"sym":"h","s":[[0,10],[10,10]],"e":[[2,0],[8,0]],"d":[[9,10,2],[2,6,1],[2,10,1]],"c":[[9,3,"p",8754,0],[1,5,"p",4401,0]]},
+{"sec":9,"w":5,"h":5,"sym":"r","s":[[10,2],[0,8]],"e":[[0,10],[10,0]],"c":[[7,3,"q",0],[9,1,"q",1],[7,7,"q",0],[5,7,"q",0],[1,7,"q",0],[1,3,"q",1],[5,5,"q",1],[1,9,"q",0],[5,9,"x"]]},
+{"sec":9,"w":5,"h":5,"s":[[10,10]],"e":[[0,2]],"c":[[7,3,"p",562,0],[9,5,"n",1,0],[3,3,"p",51,0],[7,9,"p",15,0],[3,1,"s",0],[1,1,"s",0],[3,9,"s",2],[5,9,"s",2],[9,1,"s",0],[7,5,"s",0]]},
+{"sec":9,"w":5,"h":5,"s":[[10,10]],"e":[[6,0]],"g":[[3,10],[1,8]],"d":[[9,0],[10,2],[6,2]],"c":[[1,3,"q",0],[9,7,"q",1],[7,1,"q",1],[3,5,"q",0],[5,7,"q",0],[5,9,"t",1],[7,3,"t",3],[9,9,"t",1],[7,5,"t",2],[5,3,"t",1]]},
+{"sec":9,"w":5,"h":5,"s":[[0,10]],"e":[[10,8]],"c":[[9,7,"p",50,0],[7,3,"p",7,1],[3,1,"p",3,0],[3,3,"p",3,1],[1,9,"p",3,1],[1,7,"q",1],[5,1,"q",1],[3,7,"q",0],[7,9,"q",1],[5,3,"t",3],[7,5,"t",1],[9,5,"t",2],[5,9,"t",3],[9,1,"x"]]},
+{"sec":9,"w":6,"h":6,"sym":"r","s":[[12,12],[0,0]],"e":[[0,12],[12,0]],"d":[[2,12],[4,12,1],[8,11,1]],"c":[[1,3,"q",1],[5,1,"q",0],[9,1,"q",1],[5,5,"q",0],[11,5,"q",1],[11,11,"s",3],[9,7,"s",3],[1,5,"s",2],[1,7,"s",2],[3,7,"s",3],[7,7,"s",3],[3,5,"t",3],[9,3,"t",1],[5,11,"t",2]]}
+];
+</script>
+<script>
+/* Canvas drawing of a panel. Used by the game and by the level gallery. */
+(function (root) {
+  'use strict';
+  const E = root.Engine, R = {};
+
+  // colour ids: 0 white, 1 black, 2 magenta, 3 green, 4 cyan, 5 shape yellow, 6 hollow blue, 7 triangle orange, 9 eliminator
+  R.COL = ['#f3f3ee', '#15171b', '#e84aa0', '#56c94d', '#35b8f5', '#f7c92e', '#5b93ff', '#ff9c2b', '#999', '#f3f3ee'];
+  R.RED = '#ff3b30';
+  R.LINE = '#ffffff';
+  R.LINE1 = '#3fd0ff';
+  R.LINE2 = '#ffe14d';
+  R.DEAD = '#1d2025';
+
+  R.theme = function (hue) {
+    return { bg: 'hsl(' + hue + ',24%,37%)', grid: 'hsl(' + hue + ',20%,59%)' };
+  };
+
+  R.geo = function (P, size) {
+    const m = Math.max(P.w, P.h, 3), cell = size / (m + 1.3);
+    return { size, cell, lw: cell * 0.2, ox: (size - P.w * cell) / 2, oy: (size - P.h * cell) / 2 };
+  };
+
+  // which way the rounded exit sticks out of the panel
+  R.endDir = function (C, x, y) {
+    if (y === 0) return [0, -1];
+    if (y === C.gh - 1) return [0, 1];
+    if (x === 0) return [-1, 0];
+    if (x === C.gw - 1) return [1, 0];
+    return [0, 0];
+  };
+
+  function rr(ctx, x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+  function disc(ctx, x, y, r) { ctx.beginPath(); ctx.arc(x, y, r, 0, 6.2832); ctx.fill(); }
+  function hexagon(ctx, x, y, r) {
+    ctx.beginPath();
+    for (let k = 0; k < 6; k++) ctx.lineTo(x + r * Math.cos(k * Math.PI / 3), y + r * Math.sin(k * Math.PI / 3));
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  function drawSym(ctx, s, cx, cy, u, color) {
+    ctx.fillStyle = ctx.strokeStyle = color;
+    if (s.t === 'q') {
+      rr(ctx, cx - 0.17 * u, cy - 0.17 * u, 0.34 * u, 0.34 * u, 0.08 * u); ctx.fill();
+    } else if (s.t === 's') {
+      const a = 0.14 * u;
+      ctx.save(); ctx.translate(cx, cy);
+      ctx.fillRect(-a, -a, 2 * a, 2 * a);
+      ctx.rotate(Math.PI / 4);
+      ctx.fillRect(-a, -a, 2 * a, 2 * a);
+      ctx.restore();
+    } else if (s.t === 't') {
+      const b = 0.1 * u, gap = 0.235 * u, x0 = cx - (s.n - 1) * gap / 2;
+      for (let k = 0; k < s.n; k++) {
+        const x = x0 + k * gap;
+        ctx.beginPath();
+        ctx.moveTo(x, cy - b * 0.95); ctx.lineTo(x + b, cy + b * 0.8); ctx.lineTo(x - b, cy + b * 0.8);
+        ctx.closePath(); ctx.fill();
+      }
+    } else if (s.t === 'p' || s.t === 'n') {
+      const sh = s.rots[0], unit = Math.min(0.2 * u, 0.66 * u / Math.max(sh.bw, sh.bh)), k = unit * 0.82;
+      ctx.save(); ctx.translate(cx, cy);
+      if (s.rot) ctx.rotate(-0.3);
+      ctx.lineWidth = unit * 0.26;
+      for (const c of sh) {
+        const x = (c[0] - sh.bw / 2) * unit + (unit - k) / 2, y = (c[1] - sh.bh / 2) * unit + (unit - k) / 2;
+        if (s.t === 'p') ctx.fillRect(x, y, k, k);
+        else ctx.strokeRect(x + ctx.lineWidth / 2, y + ctx.lineWidth / 2, k - ctx.lineWidth, k - ctx.lineWidth);
+      }
+      ctx.restore();
+    } else if (s.t === 'x') {
+      const len = 0.15 * u;
+      ctx.lineWidth = 0.075 * u; ctx.lineCap = 'butt';
+      ctx.beginPath();
+      for (const a of [Math.PI / 2, -Math.PI / 6, -5 * Math.PI / 6]) {
+        ctx.moveTo(cx, cy); ctx.lineTo(cx + len * Math.cos(a), cy + len * Math.sin(a));
+      }
+      ctx.stroke();
+      disc(ctx, cx, cy, 0.0375 * u);
+    }
+  }
+  R.drawSym = drawSym;
+
+  // st: { path, mode: 'idle'|'trace'|'done'|'fail', bad: Set of symbol names, blink, theme }
+  R.draw = function (ctx, P, g, st) {
+    const C = E.prep(P), gw = C.gw, gh = C.gh, th = st.theme, cell = g.cell, lw = g.lw;
+    const X = x => g.ox + x * cell / 2, Y = y => g.oy + y * cell / 2;
+    const hot = name => !!(st.bad && st.bad.has(name));
+    ctx.save();
+    ctx.clearRect(0, 0, g.size, g.size);
+    ctx.fillStyle = th.bg;
+    rr(ctx, 0, 0, g.size, g.size, g.size * 0.045); ctx.fill();
+
+    // grid
+    ctx.strokeStyle = ctx.fillStyle = th.grid; ctx.lineWidth = lw; ctx.lineCap = 'butt';
+    const joint = new Uint8Array(C.n);
+    ctx.beginPath();
+    for (let y = 0; y < gh; y++) for (let x = 0; x < gw; x++) {
+      if (!((x + y) & 1)) continue;
+      const gap = C.gap[y * gw + x];
+      if (gap === 2) continue;
+      const hz = x & 1, ax = hz ? x - 1 : x, ay = hz ? y : y - 1, bx = hz ? x + 1 : x, by = hz ? y : y + 1;
+      joint[ay * gw + ax] = joint[by * gw + bx] = 1;
+      const x1 = X(ax), y1 = Y(ay), x2 = X(bx), y2 = Y(by);
+      if (gap === 1) {
+        ctx.moveTo(x1, y1); ctx.lineTo(x1 + (x2 - x1) * 0.3, y1 + (y2 - y1) * 0.3);
+        ctx.moveTo(x2, y2); ctx.lineTo(x2 + (x1 - x2) * 0.3, y2 + (y1 - y2) * 0.3);
+      } else { ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); }
+    }
+    ctx.stroke();
+    for (let y = 0; y < gh; y += 2) for (let x = 0; x < gw; x += 2) {
+      const p = y * gw + x;
+      if (joint[p] || C.start[p] || C.end[p]) disc(ctx, X(x), Y(y), lw / 2);
+    }
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    for (const e of P.e) {
+      const d = R.endDir(C, e[0], e[1]);
+      ctx.moveTo(X(e[0]), Y(e[1])); ctx.lineTo(X(e[0]) + d[0] * cell * 0.3, Y(e[1]) + d[1] * cell * 0.3);
+    }
+    ctx.stroke();
+    for (const s of P.s) disc(ctx, X(s[0]), Y(s[1]), lw * 1.25);
+
+    // hexagons
+    const dotColor = d => d[2] === 1 ? R.LINE1 : d[2] === 2 ? R.LINE2 : '#0e0f12';
+    (P.d || []).forEach(d => { ctx.fillStyle = dotColor(d); hexagon(ctx, X(d[0]), Y(d[1]), lw * 0.45); });
+
+    // cell symbols
+    const ring = (x, y, r) => { ctx.strokeStyle = R.RED; ctx.lineWidth = Math.max(2, cell * 0.03); ctx.beginPath(); ctx.arc(x, y, r, 0, 6.2832); ctx.stroke(); };
+    for (const s of C.syms) {
+      drawSym(ctx, s, X(s.x), Y(s.y), cell, hot(s.name) && st.blink ? R.RED : R.COL[s.c]);
+      if (hot(s.name)) ring(X(s.x), Y(s.y), cell * 0.36);
+    }
+
+    // lines
+    if (st.path && st.path.length) {
+      const dead = st.mode === 'fail';
+      const line = (pts, color) => {
+        ctx.strokeStyle = ctx.fillStyle = color; ctx.lineWidth = lw; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+        if (st.mode === 'done') { ctx.shadowColor = color; ctx.shadowBlur = lw * 0.9; }
+        disc(ctx, X(pts[0][0]), Y(pts[0][1]), lw * 1.25);
+        ctx.beginPath();
+        ctx.moveTo(X(pts[0][0]), Y(pts[0][1]));
+        for (let k = 1; k < pts.length; k++) ctx.lineTo(X(pts[k][0]), Y(pts[k][1]));
+        const last = pts[pts.length - 1];
+        if (pts.length > 1 && C.end[last[1] * gw + last[0]]) {
+          const d = R.endDir(C, last[0], last[1]);
+          ctx.lineTo(X(last[0]) + d[0] * cell * 0.3, Y(last[1]) + d[1] * cell * 0.3);
+        }
+        ctx.stroke();
+        ctx.shadowBlur = 0;
+      };
+      if (C.sym) line(st.path.map(v => E.mirror(C, v[0], v[1])), dead ? R.DEAD : R.LINE2);
+      line(st.path, dead ? R.DEAD : C.sym ? R.LINE1 : R.LINE);
+    }
+
+    // wrong hexagons stay visible on top of the line
+    if (st.bad && st.bad.size) (P.d || []).forEach((d, i) => {
+      if (!hot('d' + i)) return;
+      ctx.fillStyle = st.blink ? R.RED : dotColor(d);
+      hexagon(ctx, X(d[0]), Y(d[1]), lw * 0.45);
+      ring(X(d[0]), Y(d[1]), lw * 0.85);
+    });
+    ctx.restore();
+  };
+
+  root.Render = R;
+})(typeof self !== 'undefined' ? self : this);
+</script>
+<script>
+/* Game UI: tracing the line, checking it, level navigation. */
+(function () {
+  'use strict';
+  const E = window.Engine, Rn = window.Render, LEVELS = window.LEVELS, SECTIONS = window.SECTIONS;
+  const $ = id => document.getElementById(id);
+  const cv = $('cv'), ctx = cv.getContext('2d');
+  const SAVE_KEY = 'hundred-panels';
+
+  let save = {};
+  try { save = JSON.parse(localStorage.getItem(SAVE_KEY) || '{}') || {}; } catch (e) { save = {}; }
+  if (!save.solved) save.solved = {};
+  const persist = () => { try { localStorage.setItem(SAVE_KEY, JSON.stringify(save)); } catch (e) { /* private mode */ } };
+
+  let cur = 0, P, C, geo, path = [], occ = null;
+  let mode = 'idle';                // idle | trace | done | fail
+  let bad = new Set(), blink = false, blinkTimer = null;
+  let down = false, moved = false, hover = false, downPt = [0, 0], kbStart = 0;
+
+  const X = x => geo.ox + x * geo.cell / 2, Y = y => geo.oy + y * geo.cell / 2;
+  const head = () => path[path.length - 1];
+  const isAtEnd = () => path.length > 1 && E.atEnd(C, head()[0], head()[1]);
+  const solvedCount = () => LEVELS.reduce((n, _, i) => n + (save.solved[i] ? 1 : 0), 0);
+
+  function draw() {
+    Rn.draw(ctx, P, geo, { path, mode, bad, blink, theme: Rn.theme(SECTIONS[P.sec].hue) });
+  }
+  function resize() {
+    const box = $('stage').getBoundingClientRect();
+    const size = Math.max(160, Math.floor(Math.min(box.width - 32, box.height - 4, 720)));
+    const dpr = window.devicePixelRatio || 1;
+    cv.style.width = cv.style.height = size + 'px';
+    cv.width = cv.height = Math.round(size * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    geo = Rn.geo(P, size);
+    draw();
+  }
+  function setStatus(text, ok) {
+    $('status').textContent = text || '';
+    $('status').className = ok ? 'ok' : '';
+  }
+  function stopBlink() { if (blinkTimer) { clearInterval(blinkTimer); blinkTimer = null; } }
+  function startBlink() {
+    stopBlink();
+    let n = 0;
+    blink = true;
+    blinkTimer = setInterval(() => { blink = !blink; if (++n >= 7) { blink = false; stopBlink(); } draw(); }, 190);
+  }
+
+  function refreshUI() {
+    $('lvNum').textContent = (cur + 1) + ' / ' + LEVELS.length;
+    $('lvSec').textContent = SECTIONS[P.sec].name;
+    $('prevBtn').disabled = cur === 0;
+    $('nextBtn').disabled = cur === LEVELS.length - 1;
+    $('nextBtn').classList.toggle('glow', mode === 'done' && cur < LEVELS.length - 1);
+  }
+  function idleHint() {
+    if (save.solved[cur]) return setStatus('Solved', true);
+    if (cur === 0) return setStatus('Press the circle, draw to the rounded tip, press again');
+    if (P.s.length > 1 && !C.sym) return setStatus('More than one place to begin');
+    setStatus('');
+  }
+  function load(i) {
+    cur = Math.max(0, Math.min(LEVELS.length - 1, i));
+    P = LEVELS[cur]; C = E.prep(P);
+    path = []; occ = null; mode = 'idle'; bad = new Set(); down = hover = false; kbStart = 0;
+    stopBlink();
+    save.cur = cur; persist();
+    refreshUI(); idleHint(); resize();
+  }
+  function reset() {
+    path = []; occ = null; mode = 'idle'; bad = new Set(); down = hover = false;
+    stopBlink(); refreshUI(); idleHint(); draw();
+  }
+
+  function begin(s) {
+    path = [[s[0], s[1]]]; occ = E.occOf(C, path);
+    mode = 'trace'; bad = new Set(); stopBlink(); setStatus(''); refreshUI();
+  }
+  function resume() { mode = 'trace'; bad = new Set(); stopBlink(); setStatus(''); refreshUI(); }
+
+  // One vertex forward, or one back when the direction retraces the last segment.
+  function tryStep(dx, dy) {
+    const h = head(), nx = h[0] + 2 * dx, ny = h[1] + 2 * dy;
+    if (path.length > 1) {
+      const p = path[path.length - 2];
+      if (p[0] === nx && p[1] === ny) { path.pop(); occ = E.occOf(C, path); return true; }
+    }
+    if (!E.stepOK(C, occ, h[0], h[1], dx, dy)) return false;
+    path.push([nx, ny]); occ = E.occOf(C, path);
+    return true;
+  }
+  // Pull the head of the line toward the pointer.
+  function extend(px, py) {
+    let changed = false;
+    for (let it = 0; it < 80; it++) {
+      const h = head(), dx = (px - X(h[0])) / geo.cell, dy = (py - Y(h[1])) / geo.cell;
+      const ax = Math.abs(dx), ay = Math.abs(dy);
+      if (Math.max(ax, ay) < 0.55) break;
+      const a = ax >= ay ? [Math.sign(dx), 0] : [0, Math.sign(dy)];
+      const b = ax >= ay ? [0, Math.sign(dy)] : [Math.sign(dx), 0];
+      if (tryStep(a[0], a[1])) { changed = true; continue; }
+      if (Math.min(ax, ay) >= 0.55 && tryStep(b[0], b[1])) { changed = true; continue; }
+      break;
+    }
+    if (changed) draw();
+  }
+
+  function submit() {
+    const res = E.validate(P, path);
+    down = hover = false;
+    if (res.ok) {
+      mode = 'done';
+      save.solved[cur] = 1; persist();
+      const all = solvedCount() === LEVELS.length;
+      setStatus(all ? 'All ' + LEVELS.length + ' panels solved!' : 'Solved', true);
+    } else {
+      mode = 'fail';
+      bad = new Set(res.bad);
+      startBlink();
+      setStatus('Not quite — keep dragging to fix it, or start over');
+    }
+    refreshUI(); draw();
+  }
+
+  // ---- pointer ------------------------------------------------------------------
+  function pt(e) { const r = cv.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; }
+  function startAt(px, py) {
+    let best = null, bd = Math.max(geo.lw * 2.2, 26);
+    for (const s of P.s) {
+      const d = Math.hypot(px - X(s[0]), py - Y(s[1]));
+      if (d < bd) { bd = d; best = s; }
+    }
+    return best;
+  }
+  cv.addEventListener('contextmenu', e => { e.preventDefault(); reset(); });
+  cv.addEventListener('pointerdown', e => {
+    if (e.button > 0) return;
+    e.preventDefault();
+    const p = pt(e), s = startAt(p[0], p[1]);
+    downPt = p; moved = false;
+    if (s && !(mode === 'trace' && hover && isAtEnd())) { begin(s); down = true; hover = false; draw(); return; }
+    if (mode === 'fail') { resume(); down = true; extend(p[0], p[1]); draw(); return; }
+    if (mode !== 'trace') return;
+    if (isAtEnd()) { submit(); return; }
+    down = true;
+    extend(p[0], p[1]);
+  });
+  window.addEventListener('pointermove', e => {
+    if (mode !== 'trace' || !(down || hover)) return;
+    const p = pt(e);
+    if (down && !moved && Math.hypot(p[0] - downPt[0], p[1] - downPt[1]) > 6) moved = true;
+    extend(p[0], p[1]);
+  });
+  const release = e => {
+    if (!down) return;
+    down = false;
+    if (mode !== 'trace') return;
+    if (!moved && e.pointerType === 'mouse') { hover = true; return; }   // click, then steer without holding
+    if (moved && isAtEnd()) submit();
+  };
+  window.addEventListener('pointerup', release);
+  window.addEventListener('pointercancel', () => { down = false; });
+
+  // ---- keyboard -----------------------------------------------------------------
+  const DIRS = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
+  window.addEventListener('keydown', e => {
+    if (!$('menu').hidden || !$('help').hidden) {
+      if (e.key === 'Escape') { $('menu').hidden = true; $('help').hidden = true; }
+      return;
+    }
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    const d = DIRS[e.key];
+    if (d) {
+      e.preventDefault();
+      if (mode === 'fail') resume();
+      else if (mode !== 'trace') begin(P.s[kbStart % P.s.length]);
+      tryStep(d[0], d[1]);
+      draw();
+    } else if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      if (mode === 'done') { if (cur < LEVELS.length - 1) load(cur + 1); }
+      else if (mode === 'trace' && isAtEnd()) submit();
+    } else if (e.key === 'Backspace') {
+      if (mode === 'fail') resume();
+      if (mode === 'trace' && path.length > 1) { path.pop(); occ = E.occOf(C, path); draw(); }
+    } else if (e.key === 'Tab') {                       // choose another start for the keyboard
+      e.preventDefault();
+      kbStart = (kbStart + 1) % P.s.length;
+      begin(P.s[kbStart]); draw();
+    } else if (e.key === 'Escape' || e.key === 'r' || e.key === 'R') reset();
+    else if (e.key === 'n' || e.key === 'N') { if (cur < LEVELS.length - 1) load(cur + 1); }
+    else if (e.key === 'p' || e.key === 'P') { if (cur > 0) load(cur - 1); }
+  });
+
+  // ---- level list ---------------------------------------------------------------
+  function openMenu() {
+    const body = $('menuBody');
+    body.textContent = '';
+    $('progress').textContent = solvedCount() + ' of ' + LEVELS.length + ' solved';
+    SECTIONS.forEach((sec, si) => {
+      const name = document.createElement('div');
+      name.className = 'sec-name'; name.textContent = sec.name;
+      const grid = document.createElement('div');
+      grid.className = 'lv-grid';
+      LEVELS.forEach((lv, i) => {
+        if (lv.sec !== si) return;
+        const b = document.createElement('button');
+        b.textContent = i + 1;
+        if (save.solved[i]) b.className = 'solved';
+        if (i === cur) b.classList.add('here');
+        b.addEventListener('click', () => { $('menu').hidden = true; load(i); });
+        grid.appendChild(b);
+      });
+      body.appendChild(name); body.appendChild(grid);
+    });
+    $('menu').hidden = false;
+  }
+
+  // ---- rules --------------------------------------------------------------------
+  function icon(sym) {
+    const c = document.createElement('canvas'), s = 54, dpr = window.devicePixelRatio || 1;
+    c.width = c.height = s * dpr; c.style.width = c.style.height = s + 'px';
+    const x = c.getContext('2d');
+    x.scale(dpr, dpr);
+    x.fillStyle = Rn.theme(SECTIONS[P.sec].hue).bg; x.fillRect(0, 0, s, s);
+    if (sym.t === 'd') {
+      x.fillStyle = '#0e0f12'; x.beginPath();
+      for (let k = 0; k < 6; k++) x.lineTo(s / 2 + 11 * Math.cos(k * Math.PI / 3), s / 2 + 11 * Math.sin(k * Math.PI / 3));
+      x.fill();
+    } else if (sym.t === 'm') {
+      x.lineWidth = 7; x.lineCap = 'round';
+      x.strokeStyle = Rn.LINE1; x.beginPath(); x.moveTo(15, 42); x.lineTo(15, 12); x.stroke();
+      x.strokeStyle = Rn.LINE2; x.beginPath(); x.moveTo(39, 42); x.lineTo(39, 12); x.stroke();
+    } else if (sym.t === 'l') {
+      x.lineWidth = 8; x.lineCap = 'round'; x.strokeStyle = x.fillStyle = Rn.LINE;
+      x.beginPath(); x.arc(15, 38, 8, 0, 6.3); x.fill();
+      x.beginPath(); x.moveTo(15, 38); x.lineTo(38, 38); x.lineTo(38, 12); x.stroke();
+    } else {
+      if (sym.mask) sym.rots = E.rotations(sym.mask, sym.rot);
+      Rn.drawSym(x, sym, s / 2, s / 2, 90, Rn.COL[sym.c]);
+    }
+    return c;
+  }
+  function openHelp() {
+    const has = t => (P.c || []).some(a => a[2] === t);
+    const rules = [[{ t: 'l' }, 'Draw one line from a big circle to a rounded tip. It can never cross or touch itself, and it cannot pass a broken segment.']];
+    if (C.sym) rules.push([{ t: 'm' }, 'A second line copies yours as a ' + (C.sym === 'r' ? 'half-turn rotation' : 'mirror image') + '. The two lines may not meet. Start from either circle.']);
+    if ((P.d || []).length) rules.push([{ t: 'd' }, 'The line must pass through every hexagon.' + ((P.d || []).some(d => d[2]) ? ' A coloured hexagon must be taken by the line of that colour.' : '')]);
+    if (has('q')) rules.push([{ t: 'q', c: 1 }, 'Squares of different colours must end up in different areas.']);
+    if (has('s')) rules.push([{ t: 's', c: 0 }, 'Each star needs exactly one partner of its own colour in its area — another star or any other symbol of that colour. Other colours do not matter.']);
+    if (has('t')) rules.push([{ t: 't', n: 2, c: 7 }, 'The line must run along exactly as many sides of this cell as there are triangles.']);
+    if (has('p')) rules.push([{ t: 'p', mask: 0x13, rot: 0, c: 5 }, 'The area around a shape must be exactly that shape. Several shapes in one area fit together to fill it. A tilted shape may be rotated; an upright one may not.']);
+    if (has('n')) rules.push([{ t: 'n', mask: 1, rot: 0, c: 6 }, 'A hollow shape cancels that many cells of the solid shapes in its area. The rest must still fill the area exactly.']);
+    if (has('x')) rules.push([{ t: 'x', c: 9 }, 'This mark removes one other symbol from its area — and it must have a wrong one to remove. Everything left has to be correct.']);
+    const body = $('helpBody');
+    body.textContent = '';
+    rules.forEach(r => {
+      const row = document.createElement('div'), txt = document.createElement('div');
+      row.className = 'rule'; txt.textContent = r[1];
+      row.appendChild(icon(r[0])); row.appendChild(txt); body.appendChild(row);
+    });
+    const tip = document.createElement('p');
+    tip.innerHTML = '<small>Mouse: click a circle, steer, click on the tip to finish (or just drag). Touch: drag from a circle and lift at the tip. ' +
+      'Keyboard: arrows, Enter, Backspace, Esc. Right-click or Clear starts over.</small>';
+    body.appendChild(tip);
+    $('help').hidden = false;
+  }
+
+  $('menuBtn').addEventListener('click', openMenu);
+  $('menuClose').addEventListener('click', () => { $('menu').hidden = true; });
+  $('helpBtn').addEventListener('click', openHelp);
+  $('helpClose').addEventListener('click', () => { $('help').hidden = true; });
+  $('prevBtn').addEventListener('click', () => load(cur - 1));
+  $('nextBtn').addEventListener('click', () => load(cur + 1));
+  $('resetBtn').addEventListener('click', reset);
+  let wipeArmed = 0;                    // second press within a few seconds confirms
+  $('wipeBtn').addEventListener('click', () => {
+    if (Date.now() - wipeArmed > 4000) {
+      wipeArmed = Date.now();
+      $('wipeBtn').textContent = 'Press again to erase everything';
+      setTimeout(() => { $('wipeBtn').textContent = 'Erase progress'; }, 4000);
+      return;
+    }
+    wipeArmed = 0;
+    $('wipeBtn').textContent = 'Erase progress';
+    save = { solved: {}, cur: 0 }; persist(); $('menu').hidden = true; load(0);
+  });
+  window.addEventListener('resize', resize);
+
+  const first = LEVELS.findIndex((_, i) => !save.solved[i]);
+  load(typeof save.cur === 'number' ? save.cur : Math.max(0, first));
+
+  // small hook for automated checks
+  window.__game = {
+    load, state: () => ({ cur, mode, path: path.map(v => v.slice()), bad: Array.from(bad) }),
+    play: pts => { begin(pts[0]); for (let k = 1; k < pts.length; k++) tryStep(Math.sign(pts[k][0] - pts[k - 1][0]), Math.sign(pts[k][1] - pts[k - 1][1])); draw(); if (isAtEnd()) submit(); return mode; }
+  };
+})();
+</script>
+</body>
+</html>
